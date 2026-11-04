@@ -79,16 +79,14 @@ pub fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> 
     Ok(menu)
 }
 
-/// The default macOS menu binds ⌘W to Close Window, which closed the whole app
-/// whenever the page left ⌘W unhandled. ⌘W becomes Close Tab (the page decides
-/// what that closes, never the window) and Close Window moves to ⇧⌘W, as in
-/// Terminal.app. Quit becomes a custom item so it can ask first (quit.rs); the
-/// default one sends AppKit's terminate:, which exits without asking.
+/// The default macOS menu binds ⌘W to Close Window, which closed the whole app.
+/// ⌘W is left unbound so it closes nothing: Close Tab has no shortcut (the page
+/// decides what it closes, never the window) and Close Window moves to ⇧⌘W, as
+/// in Terminal.app. Quit becomes a custom item so it can ask first (quit.rs);
+/// the default one sends AppKit's terminate:, which exits without asking.
 #[cfg(target_os = "macos")]
 fn replace_default_close_and_quit<R: Runtime>(app: &AppHandle<R>, menu: &Menu<R>) -> tauri::Result<()> {
-    let close_tab_item = MenuItemBuilder::with_id(MENU_ID_CLOSE_TAB, "Close Tab")
-        .accelerator("CmdOrCtrl+W")
-        .build(app)?;
+    let close_tab_item = MenuItemBuilder::with_id(MENU_ID_CLOSE_TAB, "Close Tab").build(app)?;
     let close_window_item = MenuItemBuilder::with_id(MENU_ID_CLOSE_WINDOW, "Close Window")
         .accelerator("CmdOrCtrl+Shift+W")
         .build(app)?;

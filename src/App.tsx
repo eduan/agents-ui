@@ -2727,8 +2727,6 @@ export default function App() {
   const terminalSearchSessionsRef = useRef(terminalSearchSessions);
   terminalSearchSessionsRef.current = terminalSearchSessions;
   const terminalSearchTriggerAtRef = useRef(0);
-  // When the page last handled ⌘W, so File › Close Tab doesn't repeat it.
-  const closeTabTriggerAtRef = useRef(0);
   const codeEditorPanelRef = useRef<CodeEditorPanelHandle | null>(null);
   const handleTerminalRegistryChanged = useCallback(() => {
     setTerminalSearchSessions((prev) => (prev.size === 0 ? prev : new Set(prev)));
@@ -6241,9 +6239,9 @@ export default function App() {
     );
   }, []);
 
-  // What ⌘W and File › Close Tab close: the file viewer's active tab when the
-  // file viewer has focus, otherwise the active session. Nothing while a dialog
-  // is open or a text field has focus, and never the window (see app_menu.rs).
+  // What File › Close Tab closes: the file viewer's active tab when the file
+  // viewer has focus, otherwise the active session. Nothing while a dialog is
+  // open or a text field has focus, and never the window (see app_menu.rs).
   const closeFocusedTab = useCallback(
     (target: Element | null) => {
       const ks = keyHandlerStateRef.current;
@@ -6340,16 +6338,6 @@ export default function App() {
       const shortcutTarget = eventTargetElement(e);
       const isEditingText = isTextEditingTarget(shortcutTarget);
       const isCodeEditorTarget = Boolean(shortcutTarget?.closest(".codeEditorPanel"));
-
-      // ⌘W is always consumed: a key the page leaves unhandled goes to the
-      // native menu. Monaco binds it itself (close file tab, CodeEditorPanel).
-      if (binding === "session.close") {
-        closeTabTriggerAtRef.current = Date.now();
-        if (shortcutTarget?.closest(".monaco-editor")) return;
-        e.preventDefault();
-        closeFocusedTab(shortcutTarget);
-        return;
-      }
 
       if (
         binding &&
@@ -8523,10 +8511,8 @@ export default function App() {
           return;
         }
         if (event.payload.id === "window-close-tab") {
-          // Fires for a click on the menu item, or for ⌘W the page didn't see:
-          // focus is then in a browser tab's native webview, so the main page
-          // has no focus and that browser tab is the one to close.
-          if (Date.now() - closeTabTriggerAtRef.current < 180) return;
+          // With focus in a browser tab's native webview the main page has no
+          // focus, and that browser tab is the one to close.
           if (!document.hasFocus()) {
             codeEditorPanelRef.current?.closeActiveTab({ browserOnly: true });
             return;

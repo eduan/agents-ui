@@ -124,7 +124,7 @@ export type CodeEditorPanelHandle = {
   openWorkspaceTab: (input: CodeEditorOpenWorkspaceTabInput) => Promise<CodeEditorWorkspaceTab>;
   focusWorkspaceTab: (input: { tabId?: string | null; path?: string | null }) => CodeEditorWorkspaceTab;
   closeWorkspaceTab: (input: { tabId?: string | null; path?: string | null; force?: boolean }) => CodeEditorWorkspaceTab;
-  // ⌘W: closes the active tab (asking first if it has unsaved changes);
+  // File › Close Tab: closes the active tab (asking first if it has unsaved changes);
   // `browserOnly` limits that to a browser tab. Returns whether one closed.
   closeActiveTab: (options?: { browserOnly?: boolean }) => boolean;
   browserNavigate: (input: { tabId?: string | null; url: string; activate?: boolean }) => Promise<CodeEditorWorkspaceTab>;
@@ -2056,11 +2056,6 @@ export const CodeEditorPanel = React.forwardRef<CodeEditorPanelHandle, CodeEdito
       registerCodeEditorThemes(monaco);
       editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
         void saveActive();
-      });
-      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyW, () => {
-        const path = activePathRef.current;
-        if (!path) return;
-        requestCloseTab(path);
       });
       editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyA, () => {
         selectAllActiveModel();
