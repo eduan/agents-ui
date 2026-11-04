@@ -17,6 +17,7 @@ import {
   type ProcessEffect,
 } from "./processEffects";
 import { shortenPathSmart } from "./pathDisplay";
+import { withUnrestoredSessions } from "./sessionPersistence";
 import { SlidePanel } from "./SlidePanel";
 import { PanelErrorBoundary } from "./ErrorBoundary";
 import { CommandPalette } from "./CommandPalette";
@@ -5863,6 +5864,8 @@ export default function App() {
   }, [projects]);
 
   const persistedSessionsRef = useRef<PersistedSession[]>([]);
+  // Saved sessions the startup restore hasn't brought back (yet).
+  const unrestoredSessionsRef = useRef<PersistedSession[]>([]);
   const persistedSessions = useMemo<PersistedSession[]>(() => {
     const next = sessions
       .filter((session) => !session.closing)
@@ -5945,7 +5948,7 @@ export default function App() {
       secureStorageMode: secureStorageMode ?? undefined,
       projects,
       activeProjectId,
-      sessions: persistedSessions,
+      sessions: withUnrestoredSessions(persistedSessions, unrestoredSessionsRef.current),
       activeSessionByProject,
       prompts,
       environments,
@@ -6839,7 +6842,7 @@ export default function App() {
       secureStorageMode: nextMode,
       projects,
       activeProjectId,
-      sessions: persistedSessions,
+      sessions: withUnrestoredSessions(persistedSessions, unrestoredSessionsRef.current),
       activeSessionByProject,
       prompts,
       environments,
@@ -8848,6 +8851,7 @@ export default function App() {
                 : s.createdAt,
           })),
       );
+      unrestoredSessionsRef.current = persisted;
 
       const syncLastActiveByProject = (items: Session[]) => {
         for (const p of state.projects) {
@@ -8903,6 +8907,9 @@ export default function App() {
             restoreExisting: true,
           });
           const created = applyPendingExit(createdRaw);
+          unrestoredSessionsRef.current = unrestoredSessionsRef.current.filter(
+            (pending) => pending.persistId !== s.persistId,
+          );
           if (s.symbol) created.symbol = s.symbol;
           if (s.color) created.color = s.color;
           const restoreCmd =
