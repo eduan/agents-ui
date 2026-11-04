@@ -8369,6 +8369,10 @@ select.input {
 }
 .wsProjectDropBefore::before { top: -1px; }
 .wsProjectDropAfter::after { bottom: -1px; }
+.wsProjectSessionDrop {
+  background: rgba(var(--accent-rgb), 0.08);
+  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.55);
+}
 
 .wsProjectHeaderRow {
   display: flex;
@@ -8624,23 +8628,6 @@ select.input {
 .wsSessionItemDropBefore::after { top: -1px; }
 .wsSessionItemDropAfter::after { bottom: -1px; }
 
-.wsSessionDrag {
-  position: absolute;
-  left: -13px;
-  width: 13px;
-  height: 100%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  cursor: grab;
-  opacity: 0;
-  transition: opacity 0.12s ease;
-}
-.wsSessionItem:hover .wsSessionDrag { opacity: 0.55; }
-.wsSessionDrag:hover { opacity: 1 !important; }
 
 .wsSessionIcon {
   flex: 0 0 auto;

@@ -9595,6 +9595,60 @@ export default function App() {
     });
   }, []);
 
+  // Only regroups the session in the sidebar: its process, cwd and connection
+  // are untouched. A null target appends it, unpinned, to the project's end.
+  const handleMoveSessionToProject = useCallback((
+    sessionId: string,
+    projectId: string,
+    targetSessionId: string | null,
+    position: "before" | "after" = "before",
+  ) => {
+    const source = sessionsRef.current.find((session) => session.id === sessionId);
+    if (!source || source.projectId === projectId) return;
+    if (!projectsRef.current.some((project) => project.id === projectId)) return;
+    const sourceProjectId = source.projectId;
+
+    setSplitViews((prev) => prev.filter((v) => v.aId !== sessionId && v.bId !== sessionId));
+    setActiveSplitViewId((prev) => {
+      if (!prev) return prev;
+      const view = splitViewsRef.current.find((v) => v.id === prev) ?? null;
+      if (view && (view.aId === sessionId || view.bId === sessionId)) return null;
+      return prev;
+    });
+    setSessionsSync((prev) => {
+      const current = prev.find((session) => session.id === sessionId);
+      if (!current || current.projectId === projectId) return prev;
+
+      const targetSessions = sortProjectSessionsForSidebar(prev, projectId);
+      const targetIndex = targetSessionId
+        ? targetSessions.findIndex((session) => session.id === targetSessionId)
+        : -1;
+      const moving: Session = {
+        ...current,
+        projectId,
+        pinned: targetIndex >= 0 ? Boolean(targetSessions[targetIndex].pinned) : false,
+      };
+      const insertIndex = targetIndex < 0
+        ? targetSessions.length
+        : position === "after" ? targetIndex + 1 : targetIndex;
+      const nextTarget = [...targetSessions];
+      nextTarget.splice(insertIndex, 0, moving);
+
+      const nextSource = sortProjectSessionsForSidebar(prev, sourceProjectId)
+        .filter((session) => session.id !== sessionId);
+      const byId = new Map(
+        [...normalizeProjectSessionLayout(nextTarget), ...normalizeProjectSessionLayout(nextSource)]
+          .map((session) => [session.id, session] as const),
+      );
+      const next = prev.map((session) => byId.get(session.id) ?? session);
+
+      setActiveId((prevActive) =>
+        prevActive === sessionId ? pickActiveSessionIdFromList(sourceProjectId, next) : prevActive,
+      );
+      return next;
+    });
+  }, []);
+
   const dismissAutoRenameActivity = useCallback(() => {
     setAutoRenameActivity(null);
   }, []);
@@ -10384,6 +10438,7 @@ export default function App() {
         onCloseSession={handleCloseSession}
         onReconnectSession={handleReconnectSession}
         onReorderSession={handleReorderSession}
+        onMoveSessionToProject={handleMoveSessionToProject}
         onToggleSessionPin={handleToggleSessionPin}
         onRenameSession={handleRenameSession}
         onSetSessionSymbol={handleSetSessionSymbol}
@@ -10428,7 +10483,7 @@ export default function App() {
     handleSelectWorkspace, handleCreateWorkspace, handleRenameWorkspace, handleSetWorkspaceImage, handleDeleteWorkspace,
     selectProject, openNewProject, openProjectSettings, handleRequestDeleteProject,
     handleRenameProjectInline, moveProject, handleSetProjectSymbol, handleSetProjectColor,
-    handleSelectSessionFromTree, handleCloseSession, handleReconnectSession, handleReorderSession,
+    handleSelectSessionFromTree, handleCloseSession, handleReconnectSession, handleReorderSession, handleMoveSessionToProject,
     handleToggleSessionPin, handleRenameSession, handleSetSessionSymbol, handleSetSessionColor,
     handleNewTerminalForProject, handleNewSshForProject, handleQuickStartForProject,
     handleOpenPersistentSessions, handleOpenAgentShortcuts, handleOpenSshManager,
