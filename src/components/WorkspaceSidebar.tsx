@@ -198,7 +198,7 @@ type SessionRowProps = {
   onContextMenu: (id: string, x: number, y: number) => void;
   /** Opens the color/symbol picker at the given point (inline hover affordance). */
   onStyle: (id: string, x: number, y: number) => void;
-  onDragStart: (e: React.PointerEvent<HTMLButtonElement>, id: string) => void;
+  onDragStart: (e: React.PointerEvent<HTMLDivElement>, id: string) => void;
   onRenameChange: (v: string) => void;
   onRenameSubmit: () => void;
   onRenameCancel: () => void;
@@ -257,6 +257,12 @@ const SessionRow = React.memo(function SessionRow({
       aria-selected={isActive}
       tabIndex={0}
       onClick={() => onSelect(s.id)}
+      onPointerDown={(e) => {
+        if (isRenaming) return;
+        if ((e.target as Element).closest("button, input")) return;
+        onDragStart(e, s.id);
+      }}
+      onDragStart={(e) => e.preventDefault()}
       onKeyDown={(e) => {
         if (e.key !== "Enter" && e.key !== " ") return;
         e.preventDefault();
@@ -268,17 +274,6 @@ const SessionRow = React.memo(function SessionRow({
       }}
       title={[s.name, s.cwd ? shortenPathSmart(s.cwd, 52) : null].filter(Boolean).join("\n")}
     >
-      <button
-        type="button"
-        className="wsSessionDrag"
-        onPointerDown={(e) => onDragStart(e, s.id)}
-        onClick={(e) => e.stopPropagation()}
-        title="Drag to reorder"
-        aria-label="Drag to reorder"
-      >
-        <Icon name="grip" size={10} />
-      </button>
-
       <span className={typeClass} aria-hidden="true">
         {s.symbol ? (
           <TabSymbolIcon symbol={s.symbol} />
@@ -401,6 +396,12 @@ export type WorkspaceSidebarProps = {
   onCloseSession: (id: string) => void;
   onReconnectSession: (id: string) => void;
   onReorderSession: (sourceId: string, targetId: string, position: "before" | "after") => void;
+  onMoveSessionToProject: (
+    sessionId: string,
+    projectId: string,
+    targetSessionId: string | null,
+    position: "before" | "after",
+  ) => void;
   onToggleSessionPin: (id: string) => void;
   onRenameSession: (id: string, name: string) => void;
   onSetSessionSymbol: (id: string, symbol: string | null) => void;
@@ -456,6 +457,7 @@ export const WorkspaceSidebar = React.memo(function WorkspaceSidebar(props: Work
     onCloseSession,
     onReconnectSession,
     onReorderSession,
+    onMoveSessionToProject,
     onToggleSessionPin,
     onRenameSession,
     onSetSessionSymbol,
@@ -527,6 +529,7 @@ export const WorkspaceSidebar = React.memo(function WorkspaceSidebar(props: Work
   const [sessionDrop, setSessionDrop] = React.useState<{ sessionId: string; position: "before" | "after" } | null>(null);
   const [draggingProjectId, setDraggingProjectId] = React.useState<string | null>(null);
   const [projectDrop, setProjectDrop] = React.useState<{ projectId: string; position: "before" | "after" } | null>(null);
+  const [sessionProjectDropId, setSessionProjectDropId] = React.useState<string | null>(null);
 
   const wsMenuPos = useClampedMenuPosition(wsMenuRef, wsMenuOpen);
   const pickerPos = useClampedMenuPosition(pickerRef, picker);
@@ -758,28 +761,34 @@ export const WorkspaceSidebar = React.memo(function WorkspaceSidebar(props: Work
     setCollapsedProjects(new Set());
   }, []);
 
-  /* ---- Drag: sessions (within a project) ---- */
+  /* ---- Drag: sessions (reorder live within a project, move to another on drop) ---- */
   const handleSessionDragStart = React.useCallback(
-    (e: React.PointerEvent<HTMLButtonElement>, sessionId: string) => {
+    (e: React.PointerEvent<HTMLDivElement>, sessionId: string) => {
       if (e.button !== 0) return;
       const pointerId = e.pointerId;
-      const handle = e.currentTarget;
+      const row = e.currentTarget;
       const startX = e.clientX;
       const startY = e.clientY;
-      const sourceProjectId =
-        handle.closest<HTMLElement>(".wsSessionItem")?.dataset.projectId ?? null;
+      const sourceProjectId = row.dataset.projectId ?? null;
       let dragging = false;
       let lastTargetId: string | null = null;
       let lastPosition: "before" | "after" | null = null;
+      let moveTarget: { projectId: string; sessionId: string | null; position: "before" | "after" } | null = null;
       const prevCursor = document.body.style.cursor;
       const prevSelect = document.body.style.userSelect;
+
+      const setMoveTarget = (next: typeof moveTarget) => {
+        moveTarget = next;
+        setSessionDrop(next?.sessionId ? { sessionId: next.sessionId, position: next.position } : null);
+        setSessionProjectDropId(next && !next.sessionId ? next.projectId : null);
+      };
 
       const stop = () => {
         document.removeEventListener("pointermove", onMove);
         document.removeEventListener("pointerup", onUp);
-        document.removeEventListener("pointercancel", onUp);
+        document.removeEventListener("pointercancel", onCancel);
         try {
-          handle.releasePointerCapture(pointerId);
+          row.releasePointerCapture(pointerId);
         } catch {
           // ignore
         }
@@ -787,6 +796,7 @@ export const WorkspaceSidebar = React.memo(function WorkspaceSidebar(props: Work
         document.body.style.userSelect = prevSelect;
         setDraggingSessionId(null);
         setSessionDrop(null);
+        setSessionProjectDropId(null);
       };
 
       const onMove = (ev: PointerEvent) => {
@@ -799,20 +809,33 @@ export const WorkspaceSidebar = React.memo(function WorkspaceSidebar(props: Work
           setDraggingSessionId(sessionId);
           document.body.style.cursor = "grabbing";
           document.body.style.userSelect = "none";
+          try {
+            row.setPointerCapture(pointerId);
+          } catch {
+            // ignore
+          }
         }
         const el = document.elementFromPoint(x, y) as HTMLElement | null;
         const item = el?.closest<HTMLElement>(".wsSessionItem") ?? null;
-        if (!item || item.dataset.projectId !== sourceProjectId) {
-          setSessionDrop(null);
+        const group = el?.closest<HTMLElement>(".wsProjectGroup") ?? null;
+        const targetProjectId = item?.dataset.projectId ?? group?.dataset.projectId ?? null;
+        if (!targetProjectId) {
+          setMoveTarget(null);
           return;
         }
-        const targetId = item.dataset.sessionId ?? null;
-        if (!targetId || targetId === sessionId) {
-          setSessionDrop(null);
+        const targetId = item?.dataset.sessionId ?? null;
+        const position: "before" | "after" = (() => {
+          if (!item) return "after";
+          const rect = item.getBoundingClientRect();
+          return y < rect.top + rect.height / 2 ? "before" : "after";
+        })();
+
+        if (targetProjectId !== sourceProjectId) {
+          setMoveTarget({ projectId: targetProjectId, sessionId: targetId, position });
           return;
         }
-        const rect = item.getBoundingClientRect();
-        const position: "before" | "after" = y < rect.top + rect.height / 2 ? "before" : "after";
+        setMoveTarget(null);
+        if (!targetId || targetId === sessionId) return;
         setSessionDrop({ sessionId: targetId, position });
         if (lastTargetId === targetId && lastPosition === position) return;
         lastTargetId = targetId;
@@ -822,21 +845,30 @@ export const WorkspaceSidebar = React.memo(function WorkspaceSidebar(props: Work
 
       const onUp = (ev: PointerEvent) => {
         if (ev.pointerId !== pointerId) return;
+        const target = moveTarget;
+        const wasDragging = dragging;
+        stop();
+        if (!wasDragging) return;
+        // The release still clicks the row under the pointer; a drag isn't a select.
+        const swallowClick = (clickEv: MouseEvent) => {
+          clickEv.stopPropagation();
+          clickEv.preventDefault();
+        };
+        window.addEventListener("click", swallowClick, { capture: true, once: true });
+        window.setTimeout(() => window.removeEventListener("click", swallowClick, { capture: true }), 0);
+        if (target) onMoveSessionToProject(sessionId, target.projectId, target.sessionId, target.position);
+      };
+
+      const onCancel = (ev: PointerEvent) => {
+        if (ev.pointerId !== pointerId) return;
         stop();
       };
 
-      e.preventDefault();
-      e.stopPropagation();
-      try {
-        handle.setPointerCapture(pointerId);
-      } catch {
-        // ignore
-      }
       document.addEventListener("pointermove", onMove);
       document.addEventListener("pointerup", onUp);
-      document.addEventListener("pointercancel", onUp);
+      document.addEventListener("pointercancel", onCancel);
     },
-    [onReorderSession],
+    [onReorderSession, onMoveSessionToProject],
   );
 
   /* ---- Drag: projects ---- */
@@ -1161,6 +1193,7 @@ export const WorkspaceSidebar = React.memo(function WorkspaceSidebar(props: Work
                   isProjectDragging ? "wsProjectGroupDragging" : "",
                   projDropPos === "before" ? "wsProjectDropBefore" : "",
                   projDropPos === "after" ? "wsProjectDropAfter" : "",
+                  sessionProjectDropId === p.id ? "wsProjectSessionDrop" : "",
                   p.color ? "wsProjectColored" : "",
                 ]
                   .filter(Boolean)
