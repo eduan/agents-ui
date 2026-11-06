@@ -573,6 +573,7 @@ body::after {
 }
 
 .sidebar {
+  position: relative;
   width: 270px;
   background: rgba(var(--paper-panel-rgb), 0.92);
   backdrop-filter: blur(16px);
@@ -583,6 +584,33 @@ body::after {
   padding: 8px;
   gap: 5px;
   min-width: 0;
+}
+
+.sidebarResize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -4px;
+  width: 8px;
+  cursor: ew-resize;
+  z-index: 6;
+}
+
+.sidebarResize::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  border-radius: var(--radius-control);
+  background: transparent;
+  transition: background 0.15s ease;
+}
+
+.sidebarResize:hover::before,
+.sidebarResizing .sidebarResize::before {
+  background: rgba(var(--accent-rgb), 0.45);
 }
 
 .sidebarTreeGroup {
