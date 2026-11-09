@@ -90,6 +90,7 @@ type CommandPaletteProps = {
   onOpenPromptsPanel: () => void;
   onOpenRecordingsPanel: () => void;
   onOpenAssetsPanel: () => void;
+  onCloseSplit?: () => void;
   /** Returns visible terminal text for a session, or empty string if unavailable */
   getTerminalText?: (sessionId: string) => string;
   /** App-provided actions appended to the built-in list (settings, shell picker, …). */
@@ -182,6 +183,7 @@ export function CommandPalette({
   onOpenPromptsPanel,
   onOpenRecordingsPanel,
   onOpenAssetsPanel,
+  onCloseSplit,
   getTerminalText,
   extraActions,
 }: CommandPaletteProps) {
@@ -334,6 +336,15 @@ export function CommandPalette({
       shortcut: "Shift+A",
     });
 
+    if (onCloseSplit) {
+      items.push({
+        id: "action-close-split",
+        type: "action",
+        title: "Close split",
+        icon: "layers",
+      });
+    }
+
     items.push({
       id: "action-secure-storage",
       type: "action",
@@ -354,7 +365,7 @@ export function CommandPalette({
     });
 
     return items;
-  }, [prompts, recordings, sessions, projects, activeSessionId, activeProjectId, isRecording, quickStarts, extraActions]);
+  }, [prompts, recordings, sessions, projects, activeSessionId, activeProjectId, isRecording, quickStarts, extraActions, onCloseSplit]);
 
   // Filter and sort by query (including terminal content search for sessions)
   const filteredItems = useMemo(() => {
@@ -508,11 +519,14 @@ export function CommandPalette({
           case "action-secure-storage":
             onOpenSecureStorageSettings();
             break;
+          case "action-close-split":
+            onCloseSplit?.();
+            break;
         }
         break;
       }
     }
-  }, [onClose, onSendPrompt, onOpenRecording, onSwitchSession, onSelectProject, onNewSession, onOpenSshManager, onNewPrompt, onStartRecording, onStopRecording, onOpenSecureStorageSettings, onOpenPromptsPanel, onOpenRecordingsPanel, onOpenAssetsPanel, onQuickStart]);
+  }, [onClose, onSendPrompt, onOpenRecording, onSwitchSession, onSelectProject, onNewSession, onOpenSshManager, onNewPrompt, onStartRecording, onStopRecording, onOpenSecureStorageSettings, onOpenPromptsPanel, onOpenRecordingsPanel, onOpenAssetsPanel, onQuickStart, onCloseSplit]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     e.stopPropagation();
@@ -566,6 +580,7 @@ export function CommandPalette({
       case "active": return "\u25CF";
       case "session": return "\u25CB";
       case "ssh": return <Icon name="ssh" />;
+      case "layers": return <Icon name="layers" />;
       default: return "\u25CB";
     }
   };
