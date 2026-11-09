@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 This project aims to follow Semantic Versioning.
 
+## Unreleased
+
+- **Unlimited split grid**: sessions tile in an automatic grid with no pane limit, one per project and remembered across restarts. Right-click a session and choose **Open in split**.
+- **Click to add**: while a grid is open, clicking a session in the sidebar adds it to the grid.
+- **Close split, Open alone and Remove from split**: end the grid from the top bar or the ⌘K palette, and right-click a grid session to open it alone or remove it (the × on a cell does the same).
+- **Focus follows the cell you click** in the grid.
+- **Removed the "Split views" sidebar list**: the old saved 2-pane layouts are discarded.
+- **API change**: `split_views.*` is removed; `sessions.split {sessionId}` and `sessions.unsplit {}` now operate on the grid, `ui.state` includes `splitSessionIds`, and a `split.changed` event is emitted.
+
 ## 0.12.1
 
 - **⌘W no longer closes the window** (macOS). It closes what has focus: the active session, or the file viewer's tab (including browser tabs) when the file viewer has focus. In a text field or with a dialog open it does nothing. Closing the window moved to **⇧⌘W**, like Terminal.app.
