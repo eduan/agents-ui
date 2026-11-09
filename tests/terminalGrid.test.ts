@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   closeGrid,
   cycleInGrid,
+  focusAfterGridRestore,
   fromPersistedGrids,
   gridOf,
   neighborInGrid,
@@ -82,6 +83,30 @@ test("cycleInGrid_Forward_WrapsToFirst", () => {
 
 test("cycleInGrid_Backward_WrapsToLast", () => {
   assert.equal(cycleInGrid(["a", "b", "c"], "a", -1), "c");
+});
+
+test("cycleInGrid_NonMemberForward_ReturnsFirst", () => {
+  assert.equal(cycleInGrid(["a", "b", "c"], "x", 1), "a");
+});
+
+test("cycleInGrid_NonMemberBackward_ReturnsLast", () => {
+  assert.equal(cycleInGrid(["a", "b", "c"], "x", -1), "c");
+});
+
+test("focusAfterGridRestore_ActiveNotInGrid_ReturnsFirstMember", () => {
+  assert.equal(focusAfterGridRestore({ p: ["a", "b"] }, "p", "x"), "a");
+});
+
+test("focusAfterGridRestore_ActiveInGrid_ReturnsNull", () => {
+  assert.equal(focusAfterGridRestore({ p: ["a", "b"] }, "p", "b"), null);
+});
+
+test("focusAfterGridRestore_NoGrid_ReturnsNull", () => {
+  assert.equal(focusAfterGridRestore({}, "p", "x"), null);
+});
+
+test("focusAfterGridRestore_NoActive_ReturnsNull", () => {
+  assert.equal(focusAfterGridRestore({ p: ["a", "b"] }, "p", null), null);
 });
 
 test("cycleInGrid_Empty_ReturnsNull", () => {

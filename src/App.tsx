@@ -21,6 +21,7 @@ import {
   TERMINAL_GRIDS_STORAGE_KEY,
   closeGrid,
   cycleInGrid,
+  focusAfterGridRestore,
   fromPersistedGrids,
   gridOf,
   neighborInGrid,
@@ -4650,7 +4651,13 @@ export default function App() {
     const idByPersistId = new Map(live.map((s) => [s.persistId, s.id]));
     const restored = stored ? fromPersistedGrids(stored, (pid) => idByPersistId.get(pid)) : {};
     const liveIds = new Set(live.map((s) => s.id));
-    updateTerminalGrids((prev) => pruneGrids({ ...restored, ...prev }, liveIds));
+    const merged = pruneGrids({ ...restored, ...terminalGridsRef.current }, liveIds);
+    updateTerminalGrids(() => merged);
+    const activeSession = activeIdRef.current ? sessionByIdRef.current.get(activeIdRef.current) : undefined;
+    if (activeSession) {
+      const focusId = focusAfterGridRestore(merged, activeSession.projectId, activeSession.id);
+      if (focusId) setActiveId(focusId);
+    }
   }, [gridsRestored, hydrated, sessionRestoreProgress, updateTerminalGrids]);
 
   useEffect(() => {
@@ -5016,8 +5023,14 @@ export default function App() {
       },
       "sessions.split": (p) => {
         const id = p.sessionId as string;
+        if (!id) throw new Error("sessionId required");
         const s = sessionByIdRef.current.get(id);
         if (!s) throw new Error("session not found");
+        const current = activeIdRef.current ? sessionByIdRef.current.get(activeIdRef.current) : undefined;
+        const hasGrid = gridOf(terminalGridsRef.current, s.projectId).length >= 2;
+        if (!hasGrid && !(current && current.projectId === s.projectId && current.id !== id)) {
+          throw new Error("no split formed: activate another session in the same project first");
+        }
         handleOpenInSplit(id);
         return { projectId: s.projectId, splitSessionIds: [...gridOf(terminalGridsRef.current, s.projectId)] };
       },

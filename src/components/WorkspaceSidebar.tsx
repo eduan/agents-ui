@@ -1616,7 +1616,9 @@ export const WorkspaceSidebar = React.memo(function WorkspaceSidebar(props: Work
                 ]
               : []),
             { type: "separator" },
-            ...(contextSession.id !== activeSessionId && !gridSessionIds.includes(contextSession.id)
+            ...(contextSession.projectId === activeProjectId &&
+            contextSession.id !== activeSessionId &&
+            !gridSessionIds.includes(contextSession.id)
               ? [{ label: "Open in split", onSelect: () => onOpenInSplit(contextSession.id) }]
               : []),
             ...(gridSessionIds.includes(contextSession.id)

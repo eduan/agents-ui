@@ -68,6 +68,16 @@ export function cycleInGrid(ids: readonly string[], currentId: string, delta: 1 
   return ids[(index + delta + ids.length) % ids.length];
 }
 
+export function focusAfterGridRestore(
+  grids: TerminalGrids,
+  projectId: string,
+  activeId: string | null,
+): string | null {
+  const ids = gridOf(grids, projectId);
+  if (ids.length < 2 || !activeId || ids.includes(activeId)) return null;
+  return ids[0];
+}
+
 export function toPersistedGrids(
   grids: TerminalGrids,
   persistIdOf: (id: string) => string | undefined,
