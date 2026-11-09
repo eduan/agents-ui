@@ -56,6 +56,11 @@ export function neighborInGrid(ids: readonly string[], sessionId: string): strin
   return ids[index + 1] ?? ids[index - 1] ?? null;
 }
 
+export function visibleSessionIds(gridIds: readonly string[], activeId: string | null): readonly string[] {
+  if (gridIds.length >= 2) return gridIds;
+  return activeId ? [activeId] : NO_IDS;
+}
+
 export function cycleInGrid(ids: readonly string[], currentId: string, delta: 1 | -1): string | null {
   if (ids.length === 0) return null;
   const index = ids.indexOf(currentId);

@@ -11,6 +11,7 @@ import {
   pruneGrids,
   removeFromGrids,
   toPersistedGrids,
+  visibleSessionIds,
 } from "../src/terminalGrid.ts";
 
 test("openInGrid_NoGrid_StartsWithCurrentThenClicked", () => {
@@ -135,4 +136,17 @@ test("parseStoredGrids_GarbageOrWrongVersion_ReturnsEmpty", () => {
 test("parseStoredGrids_ValidPayload_ReturnsGrids", () => {
   const raw = JSON.stringify({ schemaVersion: 1, grids: { p: ["a", "b"], bad: "x", worse: [1, 2] } });
   assert.deepEqual(parseStoredGrids(raw), { schemaVersion: 1, grids: { p: ["a", "b"] } });
+});
+
+test("visibleSessionIds_GridOpen_ReturnsMembersInOrder", () => {
+  const members = ["a", "b", "c"];
+  assert.equal(visibleSessionIds(members, "b"), members);
+});
+
+test("visibleSessionIds_NoGrid_ReturnsActiveOnly", () => {
+  assert.deepEqual(visibleSessionIds([], "a"), ["a"]);
+});
+
+test("visibleSessionIds_NoGridNoActive_ReturnsEmpty", () => {
+  assert.deepEqual(visibleSessionIds([], null), []);
 });
