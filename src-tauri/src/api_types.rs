@@ -252,8 +252,8 @@ pub fn method_catalog() -> Vec<MethodInfo> {
         MethodInfo { name: "sessions.activate".into(), description: "Activate/focus a session".into(), category: "sessions".into(), bridge: true },
         MethodInfo { name: "sessions.reconnect".into(), description: "Reconnect a session".into(), category: "sessions".into(), bridge: true },
         MethodInfo { name: "sessions.detach".into(), description: "Detach a persistent session".into(), category: "sessions".into(), bridge: false },
-        MethodInfo { name: "sessions.split".into(), description: "Split session view".into(), category: "sessions".into(), bridge: true },
-        MethodInfo { name: "sessions.unsplit".into(), description: "Remove split view".into(), category: "sessions".into(), bridge: true },
+        MethodInfo { name: "sessions.split".into(), description: "Add a session to the active project's split grid".into(), category: "sessions".into(), bridge: true },
+        MethodInfo { name: "sessions.unsplit".into(), description: "Close the active project's split grid".into(), category: "sessions".into(), bridge: true },
         MethodInfo { name: "sessions.start_recording".into(), description: "Start recording a session".into(), category: "sessions".into(), bridge: true },
         MethodInfo { name: "sessions.stop_recording".into(), description: "Stop recording a session".into(), category: "sessions".into(), bridge: true },
         // persistent_sessions
@@ -330,11 +330,6 @@ pub fn method_catalog() -> Vec<MethodInfo> {
         MethodInfo { name: "browser.snapshot".into(), description: "Get embedded browser tab state".into(), category: "browser".into(), bridge: true },
         MethodInfo { name: "file_viewer.snapshot".into(), description: "Get active file viewer state and text content when available".into(), category: "file_viewer".into(), bridge: true },
         MethodInfo { name: "capture.screenshot".into(), description: "Capture a PNG screenshot from the active file viewer or embedded browser visual surface".into(), category: "capture".into(), bridge: true },
-        // split_views
-        MethodInfo { name: "split_views.list".into(), description: "List split views".into(), category: "split_views".into(), bridge: true },
-        MethodInfo { name: "split_views.create".into(), description: "Create a split view".into(), category: "split_views".into(), bridge: true },
-        MethodInfo { name: "split_views.update".into(), description: "Update split view".into(), category: "split_views".into(), bridge: true },
-        MethodInfo { name: "split_views.close".into(), description: "Close a split view".into(), category: "split_views".into(), bridge: true },
         // ui
         MethodInfo { name: "ui.state".into(), description: "Get UI state".into(), category: "ui".into(), bridge: true },
         MethodInfo { name: "ui.activate_session".into(), description: "Activate a session in UI".into(), category: "ui".into(), bridge: true },
@@ -383,7 +378,6 @@ pub fn is_bridge_method(method: &str) -> bool {
         "browser.navigate" | "browser.action" | "browser.snapshot" |
         "file_viewer.snapshot" |
         "capture.screenshot" |
-        "split_views.list" | "split_views.create" | "split_views.update" | "split_views.close" |
         "ui.state" | "ui.activate_session" | "ui.toggle_panel" | "ui.command_palette" |
         "ui.navigate_session" | "ui.get_theme" | "ui.set_theme" |
         "app.state" |
