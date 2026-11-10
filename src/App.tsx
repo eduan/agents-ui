@@ -18,6 +18,7 @@ import {
 } from "./processEffects";
 import { shortenPathSmart } from "./pathDisplay";
 import { withUnrestoredSessions } from "./sessionPersistence";
+import { DEFAULT_SIDEBAR_WIDTH, clampSidebarWidth, parseStoredSidebarWidth } from "./sidebarWidth";
 import { SlidePanel } from "./SlidePanel";
 import { PanelErrorBoundary } from "./ErrorBoundary";
 import { CommandPalette } from "./CommandPalette";
@@ -331,6 +332,7 @@ const STORAGE_UI_THEME_KEY = "agents-ui-ui-theme-v1";
 const STORAGE_AUTO_CAFFEINATE_KEY = "agents-ui-auto-caffeinate-v1";
 const STORAGE_WORKSPACES_KEY = "agents-ui-workspaces-v1";
 const STORAGE_SIDEBAR_COLLAPSED_KEY = "agents-ui-sidebar-collapsed-v1";
+const STORAGE_SIDEBAR_WIDTH_KEY = "agents-ui-sidebar-width-v1";
 const DEFAULT_UI_THEME: UiTheme = "midnight";
 // Long enough to outlast the pauses inside one agent run (output gaps of a
 // few seconds happen constantly; thinking pauses can reach ~10s).
@@ -2217,6 +2219,55 @@ export default function App() {
       // Best-effort.
     }
   }, [sidebarCollapsed]);
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    try {
+      return parseStoredSidebarWidth(localStorage.getItem(STORAGE_SIDEBAR_WIDTH_KEY));
+    } catch {
+      return DEFAULT_SIDEBAR_WIDTH;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_SIDEBAR_WIDTH_KEY, String(sidebarWidth));
+    } catch {
+      // Best-effort.
+    }
+  }, [sidebarWidth]);
+  // Drags write the width straight to the element; state is set once on release.
+  const beginSidebarResize = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const sidebarEl = e.currentTarget.parentElement;
+    if (!sidebarEl) return;
+    e.preventDefault();
+    const pointerId = e.pointerId;
+    const startX = e.clientX;
+    const startWidth = sidebarEl.getBoundingClientRect().width;
+    let nextWidth = clampSidebarWidth(startWidth);
+    const prevCursor = document.body.style.cursor;
+    const prevSelect = document.body.style.userSelect;
+    document.body.style.cursor = "ew-resize";
+    document.body.style.userSelect = "none";
+    sidebarEl.classList.add("sidebarResizing");
+
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      nextWidth = clampSidebarWidth(startWidth + ev.clientX - startX);
+      sidebarEl.style.width = `${nextWidth}px`;
+    };
+    const onEnd = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onEnd);
+      document.removeEventListener("pointercancel", onEnd);
+      document.body.style.cursor = prevCursor;
+      document.body.style.userSelect = prevSelect;
+      sidebarEl.classList.remove("sidebarResizing");
+      setSidebarWidth(nextWidth);
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onEnd);
+    document.addEventListener("pointercancel", onEnd);
+  }, []);
   const [uiTheme, setUiTheme] = useState<UiTheme>(INITIAL_UI_THEME);
   const uiThemeRef = useRef<UiTheme>(INITIAL_UI_THEME);
   uiThemeRef.current = uiTheme;
@@ -10404,7 +10455,10 @@ export default function App() {
   }, [hasRunningActivityItems]);
 
   const sidebarJsx = useMemo(() => (
-    <div className={`sidebar${sidebarCollapsed ? " sidebarCollapsed" : ""}`}>
+    <div
+      className={`sidebar${sidebarCollapsed ? " sidebarCollapsed" : ""}`}
+      style={sidebarCollapsed ? undefined : { width: sidebarWidth }}
+    >
       <WorkspaceSidebar
         workspaces={workspaces}
         activeWorkspaceId={activeWorkspaceId}
@@ -10467,9 +10521,20 @@ export default function App() {
           onOpenPromptsPanel={handleOpenPromptsPanel}
         />
       )}
+      {!sidebarCollapsed && (
+        <div
+          className="sidebarResize"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar"
+          title="Drag to resize · double-click to reset"
+          onPointerDown={beginSidebarResize}
+          onDoubleClick={() => setSidebarWidth(DEFAULT_SIDEBAR_WIDTH)}
+        />
+      )}
     </div>
   ), [
-    sidebarCollapsed, workspaces, activeWorkspaceId, workspaceProjects, sessionsByProject,
+    sidebarCollapsed, sidebarWidth, beginSidebarResize, workspaces, activeWorkspaceId, workspaceProjects, sessionsByProject,
     activeProjectId, activeId, agentWorkingIds, agentShortcuts,
     prompts, stableProjectSplitViews, splitPane, activeSplitViewId,
     autoRenamingSessions, autoRenameActivity,
