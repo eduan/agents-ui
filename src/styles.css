@@ -8697,6 +8697,12 @@ select.input {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.wsSessionHash {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
 .wsSessionItem:hover .wsSessionName { color: var(--text); }
 .wsSessionItemActive .wsSessionName { font-weight: 500; color: var(--text); }
 .wsSessionMeta {

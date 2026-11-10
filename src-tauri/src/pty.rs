@@ -134,6 +134,17 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// (session id, shell pid) for every live session.
+    pub fn session_child_pids(&self) -> Vec<(String, u32)> {
+        match self.inner.sessions.lock() {
+            Ok(sessions) => sessions
+                .iter()
+                .filter_map(|(id, s)| s.child_pid.map(|pid| (id.clone(), pid)))
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     /// (launch command, child pid) for every live session. The auto-caffeinate
     /// watcher derives SSH activity from this PTY-table ground truth rather
     /// than trusting frontend session state.

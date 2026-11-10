@@ -18,6 +18,7 @@ import {
 } from "./processEffects";
 import { shortenPathSmart } from "./pathDisplay";
 import { withUnrestoredSessions } from "./sessionPersistence";
+import { type ClaudeSessionIds, sameClaudeSessionIds } from "./claudeSessionIds";
 import { DEFAULT_SIDEBAR_WIDTH, clampSidebarWidth, parseStoredSidebarWidth } from "./sidebarWidth";
 import { SlidePanel } from "./SlidePanel";
 import { PanelErrorBoundary } from "./ErrorBoundary";
@@ -332,6 +333,7 @@ const STORAGE_UI_THEME_KEY = "agents-ui-ui-theme-v1";
 const STORAGE_AUTO_CAFFEINATE_KEY = "agents-ui-auto-caffeinate-v1";
 const STORAGE_WORKSPACES_KEY = "agents-ui-workspaces-v1";
 const STORAGE_SIDEBAR_COLLAPSED_KEY = "agents-ui-sidebar-collapsed-v1";
+const CLAUDE_SESSION_POLL_MS = 4000;
 const STORAGE_SIDEBAR_WIDTH_KEY = "agents-ui-sidebar-width-v1";
 const DEFAULT_UI_THEME: UiTheme = "midnight";
 // Long enough to outlast the pauses inside one agent run (output gaps of a
@@ -2277,6 +2279,7 @@ export default function App() {
 
   const [sessions, setSessions] = useState<Session[]>([]);
   const [agentWorkingIds, setAgentWorkingIds] = useState<ReadonlySet<string>>(EMPTY_STRING_SET);
+  const [claudeSessionIds, setClaudeSessionIds] = useState<ClaudeSessionIds>({});
   const [prompts, setPrompts] = useState<Prompt[]>([]);
   const [environments, setEnvironments] = useState<EnvironmentConfig[]>([]);
   const [assets, setAssets] = useState<AssetTemplate[]>([]);
@@ -5911,6 +5914,27 @@ export default function App() {
       return changed ? next : prev;
     });
   }, [projects]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    let cancelled = false;
+    const refresh = () => {
+      invoke<Record<string, string>>("claude_session_ids")
+        .then((next) => {
+          if (cancelled) return;
+          setClaudeSessionIds((prev) => (sameClaudeSessionIds(prev, next) ? prev : next));
+        })
+        .catch(() => {
+          // Best-effort label; the next poll retries.
+        });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, CLAUDE_SESSION_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [hydrated]);
 
   const persistedSessionsRef = useRef<PersistedSession[]>([]);
   // Saved sessions the startup restore hasn't brought back (yet).
@@ -10472,6 +10496,7 @@ export default function App() {
         activeSessionId={activeId}
         sessionsByProject={sessionsByProject}
         workingSessionIds={agentWorkingIds}
+        claudeSessionIds={claudeSessionIds}
         agentShortcuts={agentShortcuts}
         onSelectProject={selectProject}
         onNewProject={openNewProject}
@@ -10535,7 +10560,7 @@ export default function App() {
     </div>
   ), [
     sidebarCollapsed, sidebarWidth, beginSidebarResize, workspaces, activeWorkspaceId, workspaceProjects, sessionsByProject,
-    activeProjectId, activeId, agentWorkingIds, agentShortcuts,
+    activeProjectId, activeId, agentWorkingIds, claudeSessionIds, agentShortcuts,
     prompts, stableProjectSplitViews, splitPane, activeSplitViewId,
     autoRenamingSessions, autoRenameActivity,
     handleSelectWorkspace, handleCreateWorkspace, handleRenameWorkspace, handleSetWorkspaceImage, handleDeleteWorkspace,
