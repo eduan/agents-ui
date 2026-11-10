@@ -64,15 +64,6 @@ export type SidebarSession = {
   color?: string | null;
 };
 
-export type SidebarSplitView = {
-  id: string;
-  aId: string;
-  bId: string;
-  direction: "horizontal" | "vertical";
-  createdAt: number;
-  lastFocusedId: string;
-};
-
 const TAB_COLORS = [
   { name: "Blue", value: "107, 140, 222" },
   { name: "Cyan", value: "69, 184, 200" },
@@ -431,13 +422,10 @@ export type WorkspaceSidebarProps = {
   onAgentInstruction: (instruction: string) => void;
   agentInstructionRunning: boolean;
 
-  splitViews: SidebarSplitView[];
-  activeSplitViewId: string | null;
-  splitPane: { secondaryId: string; direction: "horizontal" | "vertical"; ratio: number } | null;
-  onActivateSplitView: (viewId: string, focusSessionId?: string) => void;
-  onRemoveSplitView: (viewId: string) => void;
-  onUnsplit: () => void;
-  onSplitSession: (sessionId: string, direction: "horizontal" | "vertical") => void;
+  gridSessionIds: readonly string[];
+  onOpenInSplit: (sessionId: string) => void;
+  onRemoveFromSplit: (sessionId: string) => void;
+  onOpenAlone: (sessionId: string) => void;
 
   collapsed: boolean;
   onToggleCollapsed: () => void;
@@ -485,13 +473,10 @@ export const WorkspaceSidebar = React.memo(function WorkspaceSidebar(props: Work
     onOpenSshManager,
     onAgentInstruction,
     agentInstructionRunning,
-    splitViews,
-    activeSplitViewId,
-    splitPane,
-    onActivateSplitView,
-    onRemoveSplitView,
-    onUnsplit,
-    onSplitSession,
+    gridSessionIds,
+    onOpenInSplit,
+    onRemoveFromSplit,
+    onOpenAlone,
     collapsed,
     onToggleCollapsed,
   } = props;
@@ -971,20 +956,6 @@ export const WorkspaceSidebar = React.memo(function WorkspaceSidebar(props: Work
        null)
     : null;
 
-  const resolvedSplitViews = React.useMemo(() => {
-    const byId = new Map(Array.from(sessionsByProject.values()).flat().map((s) => [s.id, s] as const));
-    return splitViews
-      .slice()
-      .sort((a, b) => b.createdAt - a.createdAt)
-      .map((view) => {
-        const a = byId.get(view.aId) ?? null;
-        const b = byId.get(view.bId) ?? null;
-        if (!a || !b || a.id === b.id) return null;
-        return { view, a, b };
-      })
-      .filter((x): x is { view: SidebarSplitView; a: SidebarSession; b: SidebarSession } => x !== null);
-  }, [splitViews, sessionsByProject]);
-
   /* ---- Collapsed rail ---- */
   if (collapsed) {
     return (
@@ -1382,69 +1353,6 @@ export const WorkspaceSidebar = React.memo(function WorkspaceSidebar(props: Work
             );
           })
         )}
-
-        {/* Split views (active project) */}
-        {resolvedSplitViews.length > 0 && !normalizedQuery ? (
-          <div className="wsSplitSection">
-            <div className="wsSplitLabel">Split views</div>
-            {resolvedSplitViews.map(({ view, a, b }) => {
-              const isActiveView = view.id === activeSplitViewId;
-              return (
-                <div
-                  key={view.id}
-                  className={`wsSplitGroup ${isActiveView ? "wsSplitGroupActive" : ""}`}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => onActivateSplitView(view.id)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      onActivateSplitView(view.id);
-                    }
-                  }}
-                >
-                  <div className="wsSplitHeader">
-                    <Icon name="panel" size={13} />
-                    <span className="wsSplitTitle">Split view</span>
-                    <span className="wsSplitMeta">{view.direction === "vertical" ? "right" : "down"}</span>
-                    <button
-                      type="button"
-                      className="wsSplitRemove"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onRemoveSplitView(view.id);
-                      }}
-                      title="Remove split view"
-                      aria-label="Remove split view"
-                    >
-                      <Icon name="close" size={12} />
-                    </button>
-                  </div>
-                  <div className="wsSplitMembers">
-                    {[
-                      { s: a, tag: "A" },
-                      { s: b, tag: "B" },
-                    ].map(({ s, tag }) => (
-                      <button
-                        key={tag}
-                        type="button"
-                        className={`wsSplitMember ${s.id === activeSessionId ? "wsSplitMemberActive" : ""}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onActivateSplitView(view.id, s.id);
-                        }}
-                        title={s.cwd ?? undefined}
-                      >
-                        <span className="wsSplitTag">{tag}</span>
-                        <span className="wsSplitMemberName">{s.name}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        ) : null}
       </div>
 
       {/* ----- Portals: floating menus ----- */}
@@ -1723,21 +1631,16 @@ export const WorkspaceSidebar = React.memo(function WorkspaceSidebar(props: Work
                 ]
               : []),
             { type: "separator" },
-            ...(!splitPane && contextSession.id !== activeSessionId
-              ? [
-                  {
-                    label: "Split right",
-                    onSelect: () => onSplitSession(contextSession.id, "vertical"),
-                  },
-                  {
-                    label: "Split down",
-                    onSelect: () => onSplitSession(contextSession.id, "horizontal"),
-                  },
-                ]
+            ...(contextSession.projectId === activeProjectId &&
+            contextSession.id !== activeSessionId &&
+            !gridSessionIds.includes(contextSession.id)
+              ? [{ label: "Open in split", onSelect: () => onOpenInSplit(contextSession.id) }]
               : []),
-            ...(splitPane &&
-            (contextSession.id === activeSessionId || contextSession.id === splitPane.secondaryId)
-              ? [{ label: "Unsplit", onSelect: () => onUnsplit() }]
+            ...(gridSessionIds.includes(contextSession.id)
+              ? [{ label: "Remove from split", onSelect: () => onRemoveFromSplit(contextSession.id) }]
+              : []),
+            ...(gridSessionIds.length >= 2
+              ? [{ label: "Open alone", onSelect: () => onOpenAlone(contextSession.id) }]
               : []),
             { type: "separator" },
             {

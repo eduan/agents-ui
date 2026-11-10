@@ -17,6 +17,23 @@ import {
   type ProcessEffect,
 } from "./processEffects";
 import { shortenPathSmart } from "./pathDisplay";
+import {
+  TERMINAL_GRIDS_STORAGE_KEY,
+  closeGrid,
+  cycleInGrid,
+  focusAfterGridRestore,
+  fromPersistedGrids,
+  gridOf,
+  neighborInGrid,
+  openInGrid,
+  parseStoredGrids,
+  pruneGrids,
+  removeFromGrids,
+  toPersistedGrids,
+  visibleSessionIds as visibleSessionIdsOf,
+  type PersistedGridsV1,
+  type TerminalGrids,
+} from "./terminalGrid";
 import { withUnrestoredSessions } from "./sessionPersistence";
 import { type ClaudeSessionIds, sameClaudeSessionIds } from "./claudeSessionIds";
 import { DEFAULT_SIDEBAR_WIDTH, clampSidebarWidth, parseStoredSidebarWidth } from "./sidebarWidth";
@@ -248,17 +265,6 @@ type WorkspaceView = {
   treeWidth: number;
 };
 
-type SplitView = {
-  id: string;
-  projectId: string;
-  aId: string;
-  bId: string;
-  direction: "horizontal" | "vertical";
-  ratio: number;
-  createdAt: number;
-  lastFocusedId: string;
-};
-
 type PtyOutput = {
   id: string;
   persistId?: string | null;
@@ -327,7 +333,7 @@ const STORAGE_WORKSPACE_FILE_TREE_WIDTH_KEY = "agents-ui-workspace-file-tree-wid
 const STORAGE_WORKSPACE_VIEW_BY_KEY = "agents-ui-workspace-view-by-key-v1";
 const STORAGE_RECENT_SESSIONS_KEY = "agents-ui-recent-sessions-v1";
 const STORAGE_SSH_HISTORY_KEY = "agents-ui-ssh-history-v1";
-const STORAGE_SPLIT_VIEWS_KEY = "agents-ui-split-views-v1";
+const LEGACY_SPLIT_VIEWS_STORAGE_KEY = "agents-ui-split-views-v1";
 const STORAGE_AGENT_PANEL_WIDTH_KEY = "agents-ui-agent-panel-width-v1";
 const STORAGE_UI_THEME_KEY = "agents-ui-ui-theme-v1";
 const STORAGE_AUTO_CAFFEINATE_KEY = "agents-ui-auto-caffeinate-v1";
@@ -1665,71 +1671,6 @@ function loadLegacyActiveSessionByProject(): Record<string, string> {
   }
 }
 
-type SplitViewsStorageV1 = {
-  schemaVersion: 1;
-  views: SplitView[];
-};
-
-function coerceSplitView(value: unknown): SplitView | null {
-  if (!value || typeof value !== "object") return null;
-  const rec = value as Record<string, unknown>;
-
-  const id = typeof rec.id === "string" ? rec.id.trim() : "";
-  const projectId = typeof rec.projectId === "string" ? rec.projectId.trim() : "";
-  const aId = typeof rec.aId === "string" ? rec.aId.trim() : "";
-  const bId = typeof rec.bId === "string" ? rec.bId.trim() : "";
-  const direction = rec.direction === "horizontal" || rec.direction === "vertical" ? rec.direction : null;
-  const ratioRaw = typeof rec.ratio === "number" && Number.isFinite(rec.ratio) ? rec.ratio : NaN;
-  const createdAt = typeof rec.createdAt === "number" && Number.isFinite(rec.createdAt) ? rec.createdAt : Date.now();
-
-  if (!id || !projectId || !aId || !bId || aId === bId || !direction) return null;
-
-  const ratio = Math.max(0.15, Math.min(0.85, Number.isFinite(ratioRaw) ? ratioRaw : 0.5));
-
-  const lastRaw = typeof rec.lastFocusedId === "string" ? rec.lastFocusedId.trim() : "";
-  const lastFocusedId = lastRaw === aId || lastRaw === bId ? lastRaw : aId;
-
-  return {
-    id,
-    projectId,
-    aId,
-    bId,
-    direction,
-    ratio,
-    createdAt,
-    lastFocusedId,
-  };
-}
-
-function loadPersistedSplitViews(): SplitView[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_SPLIT_VIEWS_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object") return [];
-    const rec = parsed as Partial<SplitViewsStorageV1> & Record<string, unknown>;
-    if (rec.schemaVersion !== 1 || !Array.isArray(rec.views)) return [];
-    const out: SplitView[] = [];
-    for (const v of rec.views) {
-      const coerced = coerceSplitView(v);
-      if (coerced) out.push(coerced);
-      if (out.length >= 60) break;
-    }
-    return out;
-  } catch {
-    return [];
-  }
-}
-
-function persistSplitViews(views: SplitView[]) {
-  try {
-    const payload: SplitViewsStorageV1 = { schemaVersion: 1, views: views.slice(0, 60) };
-    localStorage.setItem(STORAGE_SPLIT_VIEWS_KEY, JSON.stringify(payload));
-  } catch {
-    // Best-effort.
-  }
-}
-
 function loadLegacyProjectState(): { projects: Project[]; activeProjectId: string } | null {
   let projects: Project[] = [];
   try {
@@ -2294,12 +2235,17 @@ export default function App() {
   // Shells domain lives in src/stores/shells.ts (App.tsx decomposition).
   const { detectedShells, shellsLoading, appDefaultShell } = useShellsStore();
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [splitViews, setSplitViews] = useState<SplitView[]>(() => loadPersistedSplitViews());
-  const splitViewsRef = useRef(splitViews);
-  useEffect(() => {
-    splitViewsRef.current = splitViews;
-    persistSplitViews(splitViews);
-  }, [splitViews]);
+  const [terminalGrids, setTerminalGrids] = useState<TerminalGrids>({});
+  const terminalGridsRef = useRef(terminalGrids);
+  const updateTerminalGrids = useCallback((update: (prev: TerminalGrids) => TerminalGrids) => {
+    const prev = terminalGridsRef.current;
+    const next = update(prev);
+    if (next !== prev) {
+      terminalGridsRef.current = next;
+      setTerminalGrids(next);
+    }
+    return next;
+  }, []);
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", uiTheme);
     try {
@@ -2347,34 +2293,10 @@ export default function App() {
     return () => document.removeEventListener("mousedown", handlePointerDown);
   }, [activityCenterOpen]);
 
-  const [activeSplitViewId, setActiveSplitViewId] = useState<string | null>(null);
-  const activeSplitViewIdRef = useRef(activeSplitViewId);
-  useEffect(() => {
-    activeSplitViewIdRef.current = activeSplitViewId;
-  }, [activeSplitViewId]);
-
-  const activeSplitView = useMemo(() => {
-    if (!activeSplitViewId) return null;
-    const view = splitViews.find((v) => v.id === activeSplitViewId) ?? null;
-    if (!view || view.projectId !== activeProjectId) return null;
-    return view;
-  }, [activeProjectId, activeSplitViewId, splitViews]);
-  const activeSplitViewRef = useRef<typeof activeSplitView>(null);
-  useEffect(() => {
-    activeSplitViewRef.current = activeSplitView;
-  }, [activeSplitView]);
-
-  const splitPane = useMemo(() => {
-    if (!activeSplitView || !activeId) return null;
-    const { aId, bId } = activeSplitView;
-    if (activeId !== aId && activeId !== bId) return null;
-    const secondaryId = activeId === aId ? bId : aId;
-    return { secondaryId, direction: activeSplitView.direction, ratio: activeSplitView.ratio };
-  }, [activeId, activeSplitView]);
-  const splitPaneRef = useRef<typeof splitPane>(null);
-  useEffect(() => {
-    splitPaneRef.current = splitPane;
-  }, [splitPane]);
+  const activeGridIds = useMemo(() => gridOf(terminalGrids, activeProjectId), [activeProjectId, terminalGrids]);
+  const visibleSessionIds = useMemo(() => visibleSessionIdsOf(activeGridIds, activeId), [activeGridIds, activeId]);
+  const visibleSessionIdsRef = useRef(visibleSessionIds);
+  visibleSessionIdsRef.current = visibleSessionIds;
   const [hydrated, setHydrated] = useState(false);
 
   // Persist the workspace tier (separate from the Rust state blob). Gated on
@@ -3083,8 +3005,9 @@ export default function App() {
     const queue = outputQueueRef.current;
     outputQueueRef.current = new Map();
     const activeId = preferredActiveId === undefined ? activeIdRef.current : preferredActiveId;
-    const secondaryId = splitPaneRef.current?.secondaryId ?? null;
-    const visibleCount = (activeId && queue.has(activeId) ? 1 : 0) + (secondaryId && secondaryId !== activeId && queue.has(secondaryId) ? 1 : 0);
+    const visibleIds = new Set(activeId ? [activeId, ...visibleSessionIdsRef.current] : visibleSessionIdsRef.current);
+    let visibleCount = 0;
+    for (const id of visibleIds) if (queue.has(id)) visibleCount += 1;
     const hiddenCount = Math.max(1, queue.size - visibleCount);
     const PER_HIDDEN_SESSION_BUDGET = 32 * 1024;
     let hiddenBudget = Math.min(hiddenCount * PER_HIDDEN_SESSION_BUDGET, 256 * 1024);
@@ -3174,24 +3097,15 @@ export default function App() {
       }
     };
 
-    if (activeId) {
-      const activeChunks = queue.get(activeId);
-      if (activeChunks) {
-        flushAllChunks(activeId, activeChunks);
-        queue.delete(activeId);
-      }
-    }
-
-    if (secondaryId && secondaryId !== activeId) {
-      const secondaryChunks = queue.get(secondaryId);
-      if (secondaryChunks) {
-        flushAllChunks(secondaryId, secondaryChunks);
-        queue.delete(secondaryId);
+    for (const id of visibleIds) {
+      const chunks = queue.get(id);
+      if (chunks) {
+        flushAllChunks(id, chunks);
+        queue.delete(id);
       }
     }
 
     for (const [id, chunks] of queue) {
-      if (id === activeId || id === secondaryId) continue;
       flushHiddenChunksWithBudget(id, chunks);
     }
   }, [pushPendingData]);
@@ -4754,31 +4668,73 @@ export default function App() {
 	    }
 	  }, [activeId, flushQueuedOutput]);
 
-  // Split view invariant: while a split view is active, the focused session must be a member.
-  // If the user switches to a different session (sidebar click, Ctrl+Tab, etc), exit the split view
-  // rather than injecting the new session into the split layout.
+  useLayoutEffect(() => {
+    flushQueuedOutput();
+  }, [activeGridIds, flushQueuedOutput]);
+
+  // Any route that activates a session of a project with an open grid adds it as a cell.
   useEffect(() => {
-    if (!activeSplitViewId) return;
-    const view = activeSplitView;
-    if (!view) {
-      setActiveSplitViewId(null);
-      return;
+    if (!activeId) return;
+    const projectId = sessionByIdRef.current.get(activeId)?.projectId;
+    if (!projectId) return;
+    updateTerminalGrids((prev) => {
+      const ids = gridOf(prev, projectId);
+      if (ids.length < 2 || ids.includes(activeId)) return prev;
+      return openInGrid(prev, projectId, ids[0], activeId);
+    });
+  }, [activeId, updateTerminalGrids]);
+
+  const storedGridsRef = useRef<PersistedGridsV1 | null>(null);
+  const [gridsRestored, setGridsRestored] = useState(false);
+  useEffect(() => {
+    try {
+      storedGridsRef.current = parseStoredGrids(localStorage.getItem(TERMINAL_GRIDS_STORAGE_KEY));
+      localStorage.removeItem(LEGACY_SPLIT_VIEWS_STORAGE_KEY);
+    } catch {
+      // Best-effort: localStorage may be unavailable in some contexts.
     }
-    if (!activeId || (activeId !== view.aId && activeId !== view.bId)) {
-      setActiveSplitViewId(null);
-      return;
+  }, []);
+
+  // Restore only once the startup restore has finished, so members still restoring aren't pruned.
+  useEffect(() => {
+    if (gridsRestored || !hydrated || sessionRestoreProgress !== null) return;
+    const stored = storedGridsRef.current;
+    storedGridsRef.current = null;
+    setGridsRestored(true);
+    const live = sessionsRef.current;
+    const idByPersistId = new Map(live.map((s) => [s.persistId, s.id]));
+    const restored = stored ? fromPersistedGrids(stored, (pid) => idByPersistId.get(pid)) : {};
+    const liveIds = new Set(live.map((s) => s.id));
+    const merged = pruneGrids({ ...restored, ...terminalGridsRef.current }, liveIds);
+    updateTerminalGrids(() => merged);
+    const activeSession = activeIdRef.current ? sessionByIdRef.current.get(activeIdRef.current) : undefined;
+    if (activeSession) {
+      const focusId = focusAfterGridRestore(merged, activeSession.projectId, activeSession.id);
+      if (focusId) setActiveId(focusId);
     }
-    if (view.lastFocusedId !== activeId) {
-      setSplitViews((prev) => {
-        const idx = prev.findIndex((v) => v.id === view.id);
-        if (idx < 0) return prev;
-        if (prev[idx].lastFocusedId === activeId) return prev;
-        const next = prev.slice();
-        next[idx] = { ...prev[idx], lastFocusedId: activeId };
-        return next;
-      });
+  }, [gridsRestored, hydrated, sessionRestoreProgress, updateTerminalGrids]);
+
+  useEffect(() => {
+    if (!gridsRestored) return;
+    try {
+      const payload = toPersistedGrids(terminalGrids, (id) => sessionByIdRef.current.get(id)?.persistId);
+      localStorage.setItem(TERMINAL_GRIDS_STORAGE_KEY, JSON.stringify(payload));
+    } catch {
+      // Best-effort: localStorage may be unavailable in some contexts.
     }
-  }, [activeId, activeSplitView, activeSplitViewId]);
+  }, [gridsRestored, terminalGrids]);
+
+  const notifiedGridsRef = useRef<TerminalGrids>(terminalGrids);
+  useEffect(() => {
+    const prev = notifiedGridsRef.current;
+    notifiedGridsRef.current = terminalGrids;
+    const projectIds = new Set([...Object.keys(prev), ...Object.keys(terminalGrids)]);
+    for (const projectId of projectIds) {
+      const sessionIds = gridOf(terminalGrids, projectId);
+      if (gridOf(prev, projectId) === sessionIds) continue;
+      notifyStateChange("split.changed", { projectId, sessionIds });
+    }
+  }, [terminalGrids]);
 
   useEffect(() => {
     hydratedRef.current = hydrated;
@@ -5097,7 +5053,6 @@ export default function App() {
           setActiveProjectId(s.projectId);
         }
         setActiveId(id);
-        setActiveSplitViewId(null);
         notifyStateChange("sessions.activated", { sessionId: id });
         return { activeSessionId: id };
       },
@@ -5121,27 +5076,22 @@ export default function App() {
         return result;
       },
       "sessions.split": (p) => {
-        const sv: SplitView = {
-          id: makeId(),
-          projectId: p.projectId as string,
-          aId: p.aId as string,
-          bId: p.bId as string,
-          direction: p.direction as "horizontal" | "vertical",
-          ratio: (p.ratio as number) ?? 0.5,
-          createdAt: Date.now(),
-          lastFocusedId: p.aId as string,
-        };
-        setSplitViews((prev) => [...prev, sv]);
-        setActiveSplitViewId(sv.id);
-        notifyStateChange("split_views.created", { splitViewId: sv.id, projectId: sv.projectId });
-        return sv;
+        const id = p.sessionId as string;
+        if (!id) throw new Error("sessionId required");
+        const s = sessionByIdRef.current.get(id);
+        if (!s) throw new Error("session not found");
+        const current = activeIdRef.current ? sessionByIdRef.current.get(activeIdRef.current) : undefined;
+        const hasGrid = gridOf(terminalGridsRef.current, s.projectId).length >= 2;
+        if (!hasGrid && !(current && current.projectId === s.projectId && current.id !== id)) {
+          throw new Error("no split formed: activate another session in the same project first");
+        }
+        handleOpenInSplit(id);
+        return { projectId: s.projectId, splitSessionIds: [...gridOf(terminalGridsRef.current, s.projectId)] };
       },
-      "sessions.unsplit": (p) => {
-        const id = p.id as string;
-        setSplitViews((prev) => prev.filter((sv) => sv.id !== id));
-        if (activeSplitViewIdRef.current === id) setActiveSplitViewId(null);
-        notifyStateChange("split_views.closed", { splitViewId: id });
-        return null;
+      "sessions.unsplit": () => {
+        const projectId = activeProjectIdRef.current;
+        handleCloseSplit();
+        return { projectId, splitSessionIds: [...gridOf(terminalGridsRef.current, projectId)] };
       },
       // ── persistent_sessions ──
       "persistent_sessions.attach": async (p) => {
@@ -5230,6 +5180,7 @@ export default function App() {
           await closeSession(sid).catch(() => {});
         }
         setSessionsSync((prev) => prev.filter((s) => s.projectId !== id));
+        updateTerminalGrids((prev) => closeGrid(prev, id));
         setProjects((prev) => {
           const next = prev.filter((pr) => pr.id !== id);
           if (next.length === 0) {
@@ -5480,50 +5431,6 @@ export default function App() {
         notifyStateChange("assets.applied", { assetId, dir, applied });
         return { applied };
       },
-      // ── split_views ──
-      "split_views.list": (p) => {
-        const pid = p?.projectId as string | undefined;
-        const all = splitViewsRef.current;
-        return pid ? all.filter((sv) => sv.projectId === pid) : all;
-      },
-      "split_views.create": (p) => {
-        const sv: SplitView = {
-          id: makeId(),
-          projectId: p.projectId as string,
-          aId: p.aId as string,
-          bId: p.bId as string,
-          direction: p.direction as "horizontal" | "vertical",
-          ratio: (p.ratio as number) ?? 0.5,
-          createdAt: Date.now(),
-          lastFocusedId: p.aId as string,
-        };
-        setSplitViews((prev) => [...prev, sv]);
-        setActiveSplitViewId(sv.id);
-        notifyStateChange("split_views.created", { splitViewId: sv.id, projectId: sv.projectId });
-        return sv;
-      },
-      "split_views.update": (p) => {
-        const id = p.id as string;
-        let updated: SplitView | null = null;
-        setSplitViews((prev) => prev.map((sv) => {
-          if (sv.id !== id) return sv;
-          updated = {
-            ...sv,
-            ...(p.ratio !== undefined && { ratio: p.ratio as number }),
-            ...(p.lastFocusedId !== undefined && { lastFocusedId: p.lastFocusedId as string }),
-          };
-          return updated!;
-        }));
-        notifyStateChange("split_views.updated", { splitViewId: id });
-        return updated;
-      },
-      "split_views.close": (p) => {
-        const id = p.id as string;
-        setSplitViews((prev) => prev.filter((sv) => sv.id !== id));
-        if (activeSplitViewIdRef.current === id) setActiveSplitViewId(null);
-        notifyStateChange("split_views.closed", { splitViewId: id });
-        return null;
-      },
       // ── file viewer / embedded browser tabs ──
       "file_viewer.tabs.list": listFileViewerTabs,
       "file_viewer.tabs.open": openFileViewerTab,
@@ -5588,7 +5495,7 @@ export default function App() {
       "ui.state": () => ({
         activeProjectId: activeProjectIdRef.current,
         activeSessionId: activeIdRef.current,
-        activeSplitViewId: activeSplitViewIdRef.current,
+        splitSessionIds: [...gridOf(terminalGridsRef.current, activeProjectIdRef.current)],
         theme: uiThemeRef.current,
         workspace: codeEditorPanelRef.current?.workspaceSnapshot() ?? fallbackWorkspaceSnapshot(),
       }),
@@ -5605,12 +5512,18 @@ export default function App() {
         if (!s) throw new Error("session not found");
         if (activeProjectIdRef.current !== s.projectId) setActiveProjectId(s.projectId);
         setActiveId(id);
-        setActiveSplitViewId(null);
         notifyStateChange("sessions.activated", { sessionId: id });
         return { activeSessionId: id };
       },
       "ui.navigate_session": (p) => {
         const dir = p.direction as "next" | "prev";
+        const gridIds = gridOf(terminalGridsRef.current, activeProjectIdRef.current);
+        if (gridIds.length >= 2) {
+          const gridNextId = cycleInGrid(gridIds, activeIdRef.current ?? "", dir === "next" ? 1 : -1);
+          setActiveId(gridNextId);
+          notifyStateChange("sessions.activated", { sessionId: gridNextId });
+          return { activeSessionId: gridNextId };
+        }
         const projectSessions = sessionsRef.current.filter((s) => s.projectId === activeProjectIdRef.current);
         if (projectSessions.length === 0) return { activeSessionId: null };
         const curIdx = projectSessions.findIndex((s) => s.id === activeIdRef.current);
@@ -6366,17 +6279,7 @@ export default function App() {
           inProject.find((s) => !s.closing)?.id ??
           inProject[0]?.id ??
           null;
-        const split = splitPaneRef.current;
-        const secondaryId = split?.secondaryId ?? null;
-        const ids: string[] = [];
-        if (primaryId) ids.push(primaryId);
-        if (secondaryId && secondaryId !== primaryId) {
-          const secondarySession = allSessions.find((s) => s.id === secondaryId) ?? null;
-          if (secondarySession && secondarySession.projectId === activeProjectId) {
-            ids.push(secondaryId);
-          }
-        }
-        return ids;
+        return primaryId ? [primaryId] : [];
       };
 
       const closeTerminalSearchForIds = (sessionIds: string[]) => {
@@ -6473,8 +6376,7 @@ export default function App() {
           return;
         }
 
-        const resolvedTargets = resolveVisibleTerminalSearchTargets();
-        const targets = resolvedTargets.length > 0 ? resolvedTargets : Array.from(registry.current.keys()).slice(0, 2);
+        const targets = resolveVisibleTerminalSearchTargets();
         if (targets.length === 0) {
           showNotice("No terminal available for search.", 2000);
           return;
@@ -6613,7 +6515,12 @@ export default function App() {
         });
       };
 
-      const cycleSession = (delta: number) => {
+      const cycleSession = (delta: 1 | -1) => {
+        const gridIds = gridOf(terminalGridsRef.current, activeProjectId);
+        if (gridIds.length >= 2) {
+          setActiveId(cycleInGrid(gridIds, activeId ?? "", delta));
+          return;
+        }
         if (!sessions.length) return;
         const idx = sessions.findIndex((s) => s.id === activeId);
         const next = sessions[(idx + delta + sessions.length) % sessions.length];
@@ -8109,7 +8016,6 @@ export default function App() {
   const selectProject = useCallback((projectId: string) => {
     setActiveProjectId(projectId);
     setActiveId(pickActiveSessionId(projectId));
-    setActiveSplitViewId(null);
   }, []);
 
   const selectSessionById = useCallback((sessionId: string) => {
@@ -8119,7 +8025,6 @@ export default function App() {
       setActiveProjectId(session.projectId);
     }
     setActiveId(sessionId);
-    setActiveSplitViewId(null);
   }, []);
 
   const moveProject = useCallback((projectId: string, targetProjectId: string, position: "before" | "after") => {
@@ -8485,7 +8390,7 @@ export default function App() {
         if (!exitedCleanupTimers.current.has(id)) {
           const timer = window.setTimeout(() => {
             exitedCleanupTimers.current.delete(id);
-            if (activeIdRef.current !== id) {
+            if (activeIdRef.current !== id && !visibleSessionIdsRef.current.includes(id)) {
               removeSessionFromState(id);
               // The exited tab is no longer restorable, so its bounded native
               // pending-exit record can now be discarded as well.
@@ -8618,17 +8523,7 @@ export default function App() {
             inProject.find((s) => !s.closing)?.id ??
             inProject[0]?.id ??
             null;
-          const split = splitPaneRef.current;
-          const secondaryId = split?.secondaryId ?? null;
-          const targets: string[] = [];
-          if (primaryId) targets.push(primaryId);
-          if (secondaryId && secondaryId !== primaryId) {
-            const secondarySession = allSessions.find((s) => s.id === secondaryId) ?? null;
-            if (secondarySession && secondarySession.projectId === activeProjectId) {
-              targets.push(secondaryId);
-            }
-          }
-          const resolvedTargets = targets.length > 0 ? targets : Array.from(registry.current.keys()).slice(0, 2);
+          const resolvedTargets = primaryId ? [primaryId] : [];
           if (resolvedTargets.length === 0) return;
           terminalSearchTriggerAtRef.current = now;
           const allOpen = resolvedTargets.every((id) => terminalSearchSessionsRef.current.has(id));
@@ -9367,13 +9262,9 @@ export default function App() {
       closingSessions.current.delete(id);
 	    }, 10_000);
 	    closingSessions.current.set(id, cleanupTimeout);
-	    setSplitViews((prev) => prev.filter((v) => v.aId !== id && v.bId !== id));
-      setActiveSplitViewId((prev) => {
-        if (!prev) return prev;
-        const view = splitViewsRef.current.find((v) => v.id === prev) ?? null;
-        if (view && (view.aId === id || view.bId === id)) return null;
-        return prev;
-      });
+    const gridProjectId = sessionByIdRef.current.get(id)?.projectId;
+    const gridNeighborId = gridProjectId ? neighborInGrid(gridOf(terminalGridsRef.current, gridProjectId), id) : null;
+    updateTerminalGrids((prev) => removeFromGrids(prev, id));
 	    setSessionsSync((prev) => {
 	      const removed = prev.find((s) => s.id === id);
 	      const next = prev.filter((s) => s.id !== id);
@@ -9381,7 +9272,7 @@ export default function App() {
       setActiveId((prevActive) => {
         if (prevActive !== id) return prevActive;
         const projectId = removed?.projectId ?? activeProjectIdRef.current;
-        return pickActiveSessionIdFromList(projectId, next);
+        return gridNeighborId ?? pickActiveSessionIdFromList(projectId, next);
       });
       return next;
     });
@@ -9676,13 +9567,8 @@ export default function App() {
     if (!projectsRef.current.some((project) => project.id === projectId)) return;
     const sourceProjectId = source.projectId;
 
-    setSplitViews((prev) => prev.filter((v) => v.aId !== sessionId && v.bId !== sessionId));
-    setActiveSplitViewId((prev) => {
-      if (!prev) return prev;
-      const view = splitViewsRef.current.find((v) => v.id === prev) ?? null;
-      if (view && (view.aId === sessionId || view.bId === sessionId)) return null;
-      return prev;
-    });
+    const gridNeighborId = neighborInGrid(gridOf(terminalGridsRef.current, sourceProjectId), sessionId);
+    updateTerminalGrids((prev) => removeFromGrids(prev, sessionId));
     setSessionsSync((prev) => {
       const current = prev.find((session) => session.id === sessionId);
       if (!current || current.projectId === projectId) return prev;
@@ -9711,7 +9597,7 @@ export default function App() {
       const next = prev.map((session) => byId.get(session.id) ?? session);
 
       setActiveId((prevActive) =>
-        prevActive === sessionId ? pickActiveSessionIdFromList(sourceProjectId, next) : prevActive,
+        prevActive === sessionId ? gridNeighborId ?? pickActiveSessionIdFromList(sourceProjectId, next) : prevActive,
       );
       return next;
     });
@@ -9854,135 +9740,39 @@ export default function App() {
     });
   }, []);
 
-  const handleSplitSession = useCallback((sessionId: string, direction: "horizontal" | "vertical") => {
-    const projectId = activeProjectIdRef.current;
-    const primaryId = activeIdRef.current;
-    if (!primaryId || primaryId === sessionId) return;
+  const handleOpenInSplit = useCallback((sessionId: string) => {
+    const session = sessionByIdRef.current.get(sessionId);
+    if (!session) return;
+    const currentId = activeIdRef.current;
+    const current = currentId ? sessionByIdRef.current.get(currentId) : undefined;
+    const anchorId = current && current.projectId === session.projectId ? current.id : sessionId;
+    updateTerminalGrids((prev) => openInGrid(prev, session.projectId, anchorId, sessionId));
+    selectSessionById(sessionId);
+  }, [selectSessionById, updateTerminalGrids]);
 
-    const now = Date.now();
-    const existingViews = splitViewsRef.current;
-    const activeViewId = activeSplitViewIdRef.current;
+  const handleRemoveFromSplit = useCallback((sessionId: string) => {
+    const projectId = sessionByIdRef.current.get(sessionId)?.projectId;
+    if (!projectId) return;
+    const neighborId = neighborInGrid(gridOf(terminalGridsRef.current, projectId), sessionId);
+    updateTerminalGrids((prev) => removeFromGrids(prev, sessionId));
+    if (activeIdRef.current === sessionId && neighborId) setActiveId(neighborId);
+  }, [updateTerminalGrids]);
 
-    if (activeViewId) {
-      const idx = existingViews.findIndex((v) => v.id === activeViewId);
-      const view = idx >= 0 ? existingViews[idx] : null;
-      if (view && view.projectId === projectId) {
-        const keepId =
-          primaryId === view.aId || primaryId === view.bId ? primaryId : view.lastFocusedId;
-        if (keepId === sessionId) return;
-        const next = existingViews.slice();
-        next[idx] = {
-          ...view,
-          aId: keepId,
-          bId: sessionId,
-          direction,
-          lastFocusedId: keepId,
-        };
-        setSplitViews(next);
-        setActiveSplitViewId(view.id);
-        setActiveId(keepId);
-        return;
-      }
-    }
+  const handleFocusGridSession = useCallback((sessionId: string) => setActiveId(sessionId), []);
 
-    const reusable =
-      existingViews.find(
-        (v) =>
-          v.projectId === projectId &&
-          v.direction === direction &&
-          ((v.aId === primaryId && v.bId === sessionId) || (v.aId === sessionId && v.bId === primaryId)),
-      ) ?? null;
-    if (reusable) {
-      setActiveSplitViewId(reusable.id);
-      setActiveId(primaryId);
-      return;
-    }
+  const handleCloseSplit = useCallback(() => {
+    updateTerminalGrids((prev) => closeGrid(prev, activeProjectIdRef.current));
+  }, [updateTerminalGrids]);
 
-    const id = makeId();
-    setSplitViews([
-      ...existingViews,
-      {
-        id,
-        projectId,
-        aId: primaryId,
-        bId: sessionId,
-        direction,
-        ratio: 0.5,
-        createdAt: now,
-        lastFocusedId: primaryId,
-      },
-    ]);
-    setActiveSplitViewId(id);
-    setActiveId(primaryId);
-  }, []);
-
-  const handleUnsplit = useCallback(() => {
-    setActiveSplitViewId(null);
-  }, []);
-
-  const handleSplitRatioChange = useCallback((ratio: number) => {
-    const viewId = activeSplitViewIdRef.current;
-    if (!viewId) return;
-    const clamped = Math.max(0.15, Math.min(0.85, ratio));
-    setSplitViews((prev) => {
-      const idx = prev.findIndex((v) => v.id === viewId);
-      if (idx < 0) return prev;
-      if (prev[idx].ratio === clamped) return prev;
-      const next = prev.slice();
-      next[idx] = { ...prev[idx], ratio: clamped };
-      return next;
-    });
-  }, []);
-
-  const handleCloseSplitPane = useCallback((closedSessionId: string) => {
-    const split = splitPaneRef.current;
-    if (!split) return;
-    // If closing the primary pane, make secondary the active session
-    if (closedSessionId !== split.secondaryId) {
-      setActiveId(split.secondaryId);
-    }
-    setActiveSplitViewId(null);
-  }, []);
-
-  const handleActivateSplitView = useCallback((viewId: string, focusSessionId?: string) => {
-    const view = splitViewsRef.current.find((v) => v.id === viewId) ?? null;
-    if (!view) return;
-    const focus =
-      focusSessionId && (focusSessionId === view.aId || focusSessionId === view.bId)
-        ? focusSessionId
-        : view.lastFocusedId;
-    const resolvedFocus = focus === view.aId || focus === view.bId ? focus : view.aId;
-    setActiveSplitViewId(viewId);
-    setActiveId(resolvedFocus);
-  }, []);
-
-  const handleRemoveSplitView = useCallback((viewId: string) => {
-    setSplitViews((prev) => prev.filter((v) => v.id !== viewId));
-    setActiveSplitViewId((prev) => (prev === viewId ? null : prev));
-  }, []);
+  const handleOpenAlone = useCallback((sessionId: string) => {
+    const projectId = sessionByIdRef.current.get(sessionId)?.projectId;
+    if (!projectId) return;
+    updateTerminalGrids((prev) => closeGrid(prev, projectId));
+    selectSessionById(sessionId);
+  }, [selectSessionById, updateTerminalGrids]);
 
   const handleSearchClose = useCallback((sessionId: string) => {
-    const activeProjectId = activeProjectIdRef.current;
-    const allSessions = sessionsRef.current;
-    const activeId = activeIdRef.current;
-    const activeSession = activeId ? allSessions.find((s) => s.id === activeId) ?? null : null;
-    const inProject = allSessions.filter((s) => s.projectId === activeProjectId);
-    const primaryId =
-      (activeSession && activeSession.projectId === activeProjectId ? activeSession.id : null) ??
-      inProject.find((s) => !s.closing)?.id ??
-      inProject[0]?.id ??
-      null;
-    const split = splitPaneRef.current;
-    const secondaryId = split?.secondaryId ?? null;
-    const visibleTargets: string[] = [];
-    if (primaryId) visibleTargets.push(primaryId);
-    if (secondaryId && secondaryId !== primaryId) {
-      const secondarySession = allSessions.find((s) => s.id === secondaryId) ?? null;
-      if (secondarySession && secondarySession.projectId === activeProjectId) {
-        visibleTargets.push(secondaryId);
-      }
-    }
-    const targets = visibleTargets.includes(sessionId) ? visibleTargets : [sessionId];
+    const targets = [sessionId];
     setTerminalSearchSessions((prev) => {
       const next = new Set(prev);
       let changed = false;
@@ -10152,14 +9942,17 @@ export default function App() {
 
   const handleToggleSidebarCollapsed = useCallback(() => setSidebarCollapsed((prev) => !prev), []);
 
-  // Selecting a session from the tree exits any in-pane split and focuses it
-  // (switching the active project if the session lives in another project).
+  // With a grid open in the session's project, a tree click adds it as a cell (or focuses it).
   const handleSelectSessionFromTree = useCallback(
     (sessionId: string) => {
-      handleUnsplit();
+      const projectId = sessionByIdRef.current.get(sessionId)?.projectId;
+      if (projectId && gridOf(terminalGridsRef.current, projectId).length >= 2) {
+        handleOpenInSplit(sessionId);
+        return;
+      }
       selectSessionById(sessionId);
     },
-    [handleUnsplit, selectSessionById],
+    [handleOpenInSplit, selectSessionById],
   );
 
   // --- Workspace tier handlers ---
@@ -10295,19 +10088,6 @@ export default function App() {
     setSlidePanelTab("prompts");
     setSlidePanelOpen(true);
   }, []);
-
-  // -- Ref-stable split views for the active project (sidebar tree) --
-
-  const projectSplitViewsRef = useRef<SplitView[]>([]);
-  const stableProjectSplitViews = useMemo(() => {
-    const next = splitViews.filter((v) => v.projectId === activeProjectId);
-    const prev = projectSplitViewsRef.current;
-    if (prev.length === next.length && prev.every((p, i) => p === next[i])) {
-      return prev;
-    }
-    projectSplitViewsRef.current = next;
-    return next;
-  }, [activeProjectId, splitViews]);
 
   const handleToggleActivityCenter = useCallback(() => {
     setActivityCenterAutoOpenSource(null);
@@ -10526,13 +10306,10 @@ export default function App() {
         agentInstructionRunning={
           autoRenamingSessions || autoRenameActivity?.status === "running"
         }
-        splitViews={stableProjectSplitViews}
-        activeSplitViewId={activeSplitViewId}
-        splitPane={splitPane}
-        onActivateSplitView={handleActivateSplitView}
-        onRemoveSplitView={handleRemoveSplitView}
-        onUnsplit={handleUnsplit}
-        onSplitSession={handleSplitSession}
+        gridSessionIds={activeGridIds}
+        onOpenInSplit={handleOpenInSplit}
+        onRemoveFromSplit={handleRemoveFromSplit}
+        onOpenAlone={handleOpenAlone}
         collapsed={sidebarCollapsed}
         onToggleCollapsed={handleToggleSidebarCollapsed}
       />
@@ -10561,7 +10338,7 @@ export default function App() {
   ), [
     sidebarCollapsed, sidebarWidth, beginSidebarResize, workspaces, activeWorkspaceId, workspaceProjects, sessionsByProject,
     activeProjectId, activeId, agentWorkingIds, claudeSessionIds, agentShortcuts,
-    prompts, stableProjectSplitViews, splitPane, activeSplitViewId,
+    prompts, activeGridIds,
     autoRenamingSessions, autoRenameActivity,
     handleSelectWorkspace, handleCreateWorkspace, handleRenameWorkspace, handleSetWorkspaceImage, handleDeleteWorkspace,
     selectProject, openNewProject, openProjectSettings, handleRequestDeleteProject,
@@ -10570,8 +10347,8 @@ export default function App() {
     handleToggleSessionPin, handleRenameSession, handleSetSessionSymbol, handleSetSessionColor,
     handleNewTerminalForProject, handleNewSshForProject, handleQuickStartForProject,
     handleOpenPersistentSessions, handleOpenAgentShortcuts, handleOpenSshManager,
-    handleAgentInstruction, handleActivateSplitView, handleRemoveSplitView, handleUnsplit,
-    handleSplitSession, handleToggleSidebarCollapsed,
+    handleAgentInstruction, handleOpenInSplit, handleRemoveFromSplit, handleOpenAlone,
+    handleToggleSidebarCollapsed,
     handleSendPromptToActive, openPromptEditor, handleOpenPromptsPanel,
   ]);
 
@@ -10595,6 +10372,11 @@ export default function App() {
           sshTarget={activeSshTarget}
           connectionState={activeHealthConnectionState}
         />
+        {activeGridIds.length >= 2 ? (
+          <button type="button" className="chip topbarSplitClose" onClick={handleCloseSplit} title="Close split">
+            Close split ({activeGridIds.length})
+          </button>
+        ) : null}
       </div>
       <div className="topbarRight">
         <ActivityCenter
@@ -10773,6 +10555,7 @@ export default function App() {
     uiTheme, autoCaffeinate, keepAwakeActive, showShortcutHint,
     handleToggleActivityCenter, handleOpenSettings, reportError,
     updateActiveWorkspaceView, refreshRecordings, activePreviewUrl, openUrlInWorkspaceBrowser,
+    activeGridIds, handleCloseSplit,
   ]);
 
   const workspaceRowJsx = useMemo(() => (
@@ -10793,9 +10576,9 @@ export default function App() {
             activeId={activeId}
             activeProjectId={activeProjectId}
             uiTheme={uiTheme}
-            splitPane={splitPane}
-            onSplitRatioChange={handleSplitRatioChange}
-            onCloseSplitPane={handleCloseSplitPane}
+            gridSessionIds={activeGridIds}
+            onFocusSession={handleFocusGridSession}
+            onRemoveFromGrid={handleRemoveFromSplit}
             onCwdChange={onCwdChange}
             onCommandChange={onCommandChange}
             onSessionResize={onSessionResize}
@@ -11048,7 +10831,7 @@ export default function App() {
         )}
       </div>
 	  ), [
-	    terminalPaneSessions, activeId, activeProjectId, splitPane, handleSplitRatioChange, handleCloseSplitPane,
+	    terminalPaneSessions, activeId, activeProjectId, activeGridIds, handleFocusGridSession, handleRemoveFromSplit,
 	    terminalSearchSessions, handleTerminalRegistryChanged, handleSearchClose,
 	    activeWorkspaceView, activeWorkspaceKey,
 	    activeIsSsh, activeSshTarget, activeProject, active,
@@ -12788,6 +12571,7 @@ export default function App() {
           setSlidePanelTab("recordings");
           setSlidePanelOpen(true);
         }}
+        onCloseSplit={activeGridIds.length >= 2 ? handleCloseSplit : undefined}
         extraActions={[
           {
             id: "settings",

@@ -49,7 +49,7 @@
 
 - Real PTY sessions
 - Persistent zellij sessions
-- Split views (saved terminal layouts)
+- Split grid (any number of sessions side by side, per project)
 - SSH host picker (and port forwards)
 - SSH-based projects with remote session creation
 - **Workspaces → Projects → Sessions** organization with a keyboard quick-switch sidebar
@@ -70,8 +70,8 @@
 - Multiple concurrent sessions (shells and agent CLIs)
 - Real embedded terminals powered by xterm.js + PTY backend
 - Session persistence across app restarts (optional)
-- Split views: saved 2-pane layouts per project (switch via sidebar)
-- In-terminal find (`Cmd/Ctrl+F`), synced across split panes
+- Split grid: right-click a session and choose **Open in split** to tile sessions in an automatic grid, one per project and remembered across restarts. While a grid is open, clicking a session adds it. Right-click a grid session for **Open alone** or **Remove from split**, use the × on a cell to drop it, and **Close split** (top bar or `Cmd/Ctrl+K` palette) to end the grid
+- In-terminal find (`Cmd/Ctrl+F`) in the focused cell
 - Working directory tracking and session status (exit codes, closed state)
 - Shell integration via OSC 133 markers (command start/end indicators, exit code dots)
 - Session history quick-switch bar at the bottom of the terminal

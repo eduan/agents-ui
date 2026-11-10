@@ -2,12 +2,8 @@ import React from "react";
 import SessionTerminal, { type PendingDataBuffer, type TerminalRegistry } from "../SessionTerminal";
 import { shortenPathSmart } from "../pathDisplay";
 import { TerminalSearchBar } from "./TerminalSearchBar";
+import { computeGridLayout, type GridCell } from "../gridLayout";
 
-export type SplitPane = {
-  secondaryId: string;
-  direction: "horizontal" | "vertical";
-  ratio: number;
-} | null;
 type UiTheme =
   | "dawn"
   | "sepia"
@@ -38,9 +34,9 @@ type TerminalPaneProps = {
   activeId: string | null;
   activeProjectId: string;
   uiTheme: UiTheme;
-  splitPane: SplitPane;
-  onSplitRatioChange: (ratio: number) => void;
-  onCloseSplitPane: (closedSessionId: string) => void;
+  gridSessionIds: readonly string[];
+  onFocusSession: (id: string) => void;
+  onRemoveFromGrid: (id: string) => void;
   onCwdChange: (id: string, cwd: string) => void;
   onCommandChange: (id: string, commandLine: string, source?: "osc" | "osc133" | "input") => void;
   onSessionResize: (id: string, size: { cols: number; rows: number }) => void;
@@ -52,16 +48,40 @@ type TerminalPaneProps = {
   onSearchClose: (sessionId: string) => void;
 };
 
+type SessionSearchState = { query: string; caseSensitive: boolean };
+
 const SPLIT_HEADER_HEIGHT = 26;
+const GRID_CELL_GAP_PX = 2;
+const EMPTY_SEARCH: SessionSearchState = { query: "", caseSensitive: false };
+
+function gridEdge(fraction: number): string {
+  return fraction <= 1e-6 ? "0" : `calc(${fraction * 100}% + ${GRID_CELL_GAP_PX}px)`;
+}
+
+// All four insets are set explicitly: WebKit doesn't let inline longhands reliably override the stylesheet `inset: 0`.
+function gridCellStyle(cell: GridCell): React.CSSProperties {
+  return {
+    top: gridEdge(cell.top),
+    left: gridEdge(cell.left),
+    right: gridEdge(1 - cell.left - cell.width),
+    bottom: gridEdge(1 - cell.top - cell.height),
+    paddingTop: SPLIT_HEADER_HEIGHT,
+  };
+}
+
+// Focusing the cell refocuses xterm, which would steal focus from these controls.
+function isCellControl(target: EventTarget): boolean {
+  return target instanceof Element && target.closest(".splitPaneHeaderClose, .terminalSearchBar") !== null;
+}
 
 function TerminalPaneImpl({
   sessions,
   activeId,
   activeProjectId,
   uiTheme,
-  splitPane,
-  onSplitRatioChange,
-  onCloseSplitPane,
+  gridSessionIds,
+  onFocusSession,
+  onRemoveFromGrid,
   onCwdChange,
   onCommandChange,
   onSessionResize,
@@ -73,10 +93,23 @@ function TerminalPaneImpl({
   onSearchClose,
 }: TerminalPaneProps) {
   const paneRef = React.useRef<HTMLDivElement | null>(null);
-  const prevVisibleIdRef = React.useRef<string | null>(null);
-  const prevSecondaryIdRef = React.useRef<string | null>(null);
-  const [searchQuery, setSearchQuery] = React.useState("");
-  const [searchCaseSensitive, setSearchCaseSensitive] = React.useState(false);
+  const prevVisibleKeyRef = React.useRef<string | null>(null);
+  const [paneSize, setPaneSize] = React.useState({ width: 0, height: 0 });
+  const [searchBySession, setSearchBySession] = React.useState<Record<string, SessionSearchState>>({});
+
+  React.useEffect(() => {
+    const pane = paneRef.current;
+    if (!pane) return;
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[entries.length - 1]?.contentRect;
+      if (!rect) return;
+      setPaneSize((prev) =>
+        prev.width === rect.width && prev.height === rect.height ? prev : { width: rect.width, height: rect.height },
+      );
+    });
+    observer.observe(pane);
+    return () => observer.disconnect();
+  }, []);
 
   const visibleId = React.useMemo(() => {
     const activeSession = activeId ? (sessions.find((s) => s.id === activeId) ?? null) : null;
@@ -89,137 +122,99 @@ function TerminalPaneImpl({
     return fallback;
   }, [activeId, activeProjectId, sessions]);
 
-  const secondaryVisibleId = splitPane?.secondaryId ?? null;
-  const isSplit = secondaryVisibleId !== null && secondaryVisibleId !== visibleId;
-  const visibleSearchOpen = Boolean(
-    (visibleId && searchOpenSessions.has(visibleId)) ||
-      (isSplit && secondaryVisibleId && searchOpenSessions.has(secondaryVisibleId)),
+  const gridIds = React.useMemo(() => {
+    if (gridSessionIds.length < 2) return [];
+    const mounted = new Set(sessions.map((s) => s.id));
+    const ids = gridSessionIds.filter((id) => mounted.has(id));
+    return ids.length >= 2 ? ids : [];
+  }, [gridSessionIds, sessions]);
+  const isGrid = gridIds.length >= 2;
+
+  const visibleIds = React.useMemo<readonly string[]>(
+    () => (isGrid ? gridIds : visibleId ? [visibleId] : []),
+    [gridIds, isGrid, visibleId],
   );
 
+  const cellStyleById = React.useMemo(() => {
+    const out = new Map<string, React.CSSProperties>();
+    if (!isGrid) return out;
+    const cells = computeGridLayout(visibleIds.length, paneSize.width, paneSize.height);
+    visibleIds.forEach((id, index) => out.set(id, gridCellStyle(cells[index])));
+    return out;
+  }, [isGrid, paneSize.height, paneSize.width, visibleIds]);
+
   React.useEffect(() => {
-    if (visibleSearchOpen) return;
-    if (searchQuery !== "") setSearchQuery("");
-    if (searchCaseSensitive) setSearchCaseSensitive(false);
-  }, [searchCaseSensitive, searchQuery, visibleSearchOpen]);
+    setSearchBySession((prev) => {
+      const keys = Object.keys(prev);
+      if (keys.every((id) => searchOpenSessions.has(id))) return prev;
+      const next: Record<string, SessionSearchState> = {};
+      for (const id of keys) if (searchOpenSessions.has(id)) next[id] = prev[id];
+      return next;
+    });
+  }, [searchOpenSessions]);
+
+  const updateSearch = React.useCallback((id: string, patch: Partial<SessionSearchState>) => {
+    setSearchBySession((prev) => ({ ...prev, [id]: { ...(prev[id] ?? EMPTY_SEARCH), ...patch } }));
+  }, []);
 
   // Eagerly toggle visibility via direct DOM before React's commit phase.
   React.useLayoutEffect(() => {
     const pane = paneRef.current;
     if (!pane) return;
 
-    const visChanged = visibleId !== prevVisibleIdRef.current;
-    const secChanged = secondaryVisibleId !== prevSecondaryIdRef.current;
-    if (!visChanged && !secChanged) return;
-    prevVisibleIdRef.current = visibleId;
-    prevSecondaryIdRef.current = secondaryVisibleId;
+    const visibleKey = visibleIds.join("\n");
+    if (visibleKey === prevVisibleKeyRef.current) return;
+    prevVisibleKeyRef.current = visibleKey;
 
+    const visible = new Set(visibleIds);
     const containers = pane.querySelectorAll<HTMLElement>("[data-session-id]");
     for (const el of containers) {
       const sessionId = el.dataset.sessionId;
       if (!sessionId) continue;
-      const isPrimary = sessionId === visibleId;
-      const isSecondary = isSplit && sessionId === secondaryVisibleId;
-      if (isPrimary || isSecondary) {
+      if (visible.has(sessionId)) {
         el.classList.remove("terminalHidden");
       } else {
         el.classList.add("terminalHidden");
       }
     }
-  }, [visibleId, secondaryVisibleId, isSplit]);
+  }, [visibleIds]);
 
-  const closeVisibleSearch = React.useCallback(() => {
-    // Close secondary first so focus ends on the primary terminal.
-    if (
-      isSplit &&
-      secondaryVisibleId &&
-      secondaryVisibleId !== visibleId &&
-      searchOpenSessions.has(secondaryVisibleId)
-    ) {
-      onSearchClose(secondaryVisibleId);
-    }
-    if (visibleId && searchOpenSessions.has(visibleId)) {
-      onSearchClose(visibleId);
-    }
-  }, [isSplit, onSearchClose, searchOpenSessions, secondaryVisibleId, visibleId]);
-
-  // Divider drag handler
-  const handleDividerDrag = React.useCallback(
-    (e: React.MouseEvent) => {
-      if (!splitPane || !paneRef.current) return;
-      e.preventDefault();
-      const pane = paneRef.current;
-      const startPos = splitPane.direction === "vertical" ? e.clientX : e.clientY;
-      const startRatio = splitPane.ratio;
-      const rect = pane.getBoundingClientRect();
-      const totalSize = splitPane.direction === "vertical" ? rect.width : rect.height;
-
-      const onMove = (ev: MouseEvent) => {
-        const currentPos = splitPane.direction === "vertical" ? ev.clientX : ev.clientY;
-        const delta = currentPos - startPos;
-        const newRatio = startRatio + delta / totalSize;
-        onSplitRatioChange(newRatio);
-      };
-
-      const onUp = () => {
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-        document.body.style.cursor = "";
-        document.body.style.userSelect = "";
-      };
-
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
-      document.body.style.cursor = splitPane.direction === "vertical" ? "ew-resize" : "ns-resize";
-      document.body.style.userSelect = "none";
+  const focusCell = React.useCallback(
+    (id: string, target: EventTarget) => {
+      if (id === activeId || isCellControl(target)) return;
+      onFocusSession(id);
     },
-    [splitPane, onSplitRatioChange],
+    [activeId, onFocusSession],
   );
 
-  const isVertical = splitPane?.direction === "vertical";
-  const ratio = splitPane?.ratio ?? 0.5;
-  const pct = ratio * 100;
-
-  // Compute inline styles for split containers — must set ALL four inset
-  // properties explicitly so they override the stylesheet `inset: 0` shorthand
-  // (WebKit doesn't let inline longhands override stylesheet shorthands reliably).
-  const primaryStyle: React.CSSProperties | undefined = isSplit
-    ? isVertical
-      ? { top: 0, right: `calc(${100 - pct}% + 4px)`, bottom: 0, left: 0, paddingTop: SPLIT_HEADER_HEIGHT }
-      : { top: 0, right: 0, bottom: `calc(${100 - pct}% + 4px)`, left: 0, paddingTop: SPLIT_HEADER_HEIGHT }
-    : undefined;
-
-  const secondaryStyle: React.CSSProperties | undefined = isSplit
-    ? isVertical
-      ? { top: 0, right: 0, bottom: 0, left: `calc(${pct}% + 4px)`, paddingTop: SPLIT_HEADER_HEIGHT }
-      : { top: `calc(${pct}% + 4px)`, right: 0, bottom: 0, left: 0, paddingTop: SPLIT_HEADER_HEIGHT }
-    : undefined;
-
-  const dividerStyle: React.CSSProperties | undefined = isSplit
-    ? isVertical
-      ? { position: "absolute", top: 0, bottom: 0, left: `${pct}%`, width: 8, cursor: "ew-resize", zIndex: 10, transform: "translateX(-50%)" }
-      : { position: "absolute", left: 0, right: 0, top: `${pct}%`, height: 8, cursor: "ns-resize", zIndex: 10, transform: "translateY(-50%)" }
-    : undefined;
-
   return (
-    <div
-      className={`terminalPane${isSplit ? " terminalPaneSplit" : ""}`}
-      aria-label="Terminal"
-      ref={paneRef}
-    >
+    <div className="terminalPane" aria-label="Terminal" ref={paneRef}>
       {sessions.map((session) => {
-        const isPrimary = session.id === visibleId;
-        const isSecondary = isSplit && session.id === secondaryVisibleId;
-        const showHeader = isSplit && (isPrimary || isSecondary);
-        const showSearch = (isPrimary || isSecondary) && searchOpenSessions.has(session.id);
+        const isVisible = visibleIds.includes(session.id);
+        const cellStyle = cellStyleById.get(session.id);
+        const inGrid = cellStyle !== undefined;
+        const isFocusedCell = inGrid && session.id === activeId;
+        const showSearch = isVisible && searchOpenSessions.has(session.id);
         const searchAddon = showSearch ? registry.current.get(session.id)?.search ?? null : null;
+        const search = searchBySession[session.id] ?? EMPTY_SEARCH;
+        const className = [
+          "terminalContainer",
+          isVisible ? "" : "terminalHidden",
+          inGrid ? "terminalGridCell" : "",
+          isFocusedCell ? "terminalGridCellFocused" : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
         return (
           <div
             key={session.id}
             data-session-id={session.id}
-            className={`terminalContainer ${isPrimary || isSecondary ? "" : "terminalHidden"}`}
-            style={isPrimary ? primaryStyle : isSecondary ? secondaryStyle : undefined}
+            className={className}
+            style={cellStyle}
+            onPointerDownCapture={inGrid ? (e) => focusCell(session.id, e.target) : undefined}
+            onFocusCapture={inGrid ? (e) => focusCell(session.id, e.target) : undefined}
           >
-            {showHeader && (
+            {inGrid && (
               <div
                 className="splitPaneHeader"
                 style={session.color ? { "--split-header-color": session.color } as React.CSSProperties : undefined}
@@ -230,8 +225,8 @@ function TerminalPaneImpl({
                 )}
                 <button
                   className="splitPaneHeaderClose"
-                  onClick={() => onCloseSplitPane(session.id)}
-                  title="Close split"
+                  onClick={() => onRemoveFromGrid(session.id)}
+                  title="Remove from split"
                 >
                   ×
                 </button>
@@ -241,19 +236,19 @@ function TerminalPaneImpl({
               <TerminalSearchBar
                 searchAddon={searchAddon}
                 uiTheme={uiTheme}
-                query={searchQuery}
-                onQueryChange={setSearchQuery}
-                caseSensitive={searchCaseSensitive}
-                onCaseSensitiveChange={setSearchCaseSensitive}
-                onClose={closeVisibleSearch}
-                autoFocus={isPrimary}
+                query={search.query}
+                onQueryChange={(query) => updateSearch(session.id, { query })}
+                caseSensitive={search.caseSensitive}
+                onCaseSensitiveChange={(caseSensitive) => updateSearch(session.id, { caseSensitive })}
+                onClose={() => onSearchClose(session.id)}
+                autoFocus={session.id === activeId}
               />
             )}
             <SessionTerminal
               id={session.id}
               uiTheme={uiTheme}
-              active={isPrimary || isSecondary}
-              shouldFocus={isPrimary}
+              active={isVisible}
+              shouldFocus={session.id === activeId}
               readOnly={Boolean(
                 session.exited ||
                   session.closing ||
@@ -272,30 +267,8 @@ function TerminalPaneImpl({
           </div>
         );
       })}
-      {isSplit && <div className="terminalSplitDivider" style={dividerStyle} onMouseDown={handleDividerDrag} />}
     </div>
   );
 }
 
-function arePropsEqual(prev: TerminalPaneProps, next: TerminalPaneProps): boolean {
-  return (
-    prev.sessions === next.sessions &&
-    prev.activeId === next.activeId &&
-    prev.activeProjectId === next.activeProjectId &&
-    prev.uiTheme === next.uiTheme &&
-    prev.splitPane === next.splitPane &&
-    prev.onSplitRatioChange === next.onSplitRatioChange &&
-    prev.onCloseSplitPane === next.onCloseSplitPane &&
-    prev.onCwdChange === next.onCwdChange &&
-    prev.onCommandChange === next.onCommandChange &&
-    prev.onSessionResize === next.onSessionResize &&
-    prev.onSessionTransportError === next.onSessionTransportError &&
-    prev.registry === next.registry &&
-    prev.pendingData === next.pendingData &&
-    prev.onRegistryChanged === next.onRegistryChanged &&
-    prev.searchOpenSessions === next.searchOpenSessions &&
-    prev.onSearchClose === next.onSearchClose
-  );
-}
-
-export const TerminalPane = React.memo(TerminalPaneImpl, arePropsEqual);
+export const TerminalPane = React.memo(TerminalPaneImpl);
