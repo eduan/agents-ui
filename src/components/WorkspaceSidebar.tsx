@@ -7,6 +7,7 @@ import { Icon } from "./Icon";
 import type { ProjectModalFocus } from "./modals/ProjectModal";
 import { EmptyState, Menu, type MenuEntry } from "../ui";
 import { TAB_SYMBOLS, TabSymbolIcon, normalizeTabSymbolValue } from "../tabSymbols";
+import { type ClaudeSessionIds, claudeSessionPrefix } from "../claudeSessionIds";
 
 /* -------------------------------------------------------------------------- */
 /* Types (structurally compatible with App.tsx)                               */
@@ -181,6 +182,7 @@ type SessionRowProps = {
   isActive: boolean;
   isHighlighted: boolean;
   isAgentWorking: boolean;
+  claudeSessionId: string | null;
   isRenaming: boolean;
   renameValue: string;
   onSelect: (id: string) => void;
@@ -202,6 +204,7 @@ const SessionRow = React.memo(function SessionRow({
   isActive,
   isHighlighted,
   isAgentWorking,
+  claudeSessionId,
   isRenaming,
   renameValue,
   onSelect,
@@ -263,7 +266,11 @@ const SessionRow = React.memo(function SessionRow({
         e.preventDefault();
         onContextMenu(s.id, e.clientX, e.clientY);
       }}
-      title={[s.name, s.cwd ? shortenPathSmart(s.cwd, 52) : null].filter(Boolean).join("\n")}
+      title={[
+        s.name,
+        claudeSessionId ? `Claude session ${claudeSessionId}` : null,
+        s.cwd ? shortenPathSmart(s.cwd, 52) : null,
+      ].filter(Boolean).join("\n")}
     >
       <span className={typeClass} aria-hidden="true">
         {s.symbol ? (
@@ -294,7 +301,12 @@ const SessionRow = React.memo(function SessionRow({
           autoFocus
         />
       ) : (
-        <span className="wsSessionName">{s.name}</span>
+        <>
+          {claudeSessionId ? (
+            <span className="wsSessionHash">({claudeSessionPrefix(claudeSessionId)})</span>
+          ) : null}
+          <span className="wsSessionName">{s.name}</span>
+        </>
       )}
 
       {s.pinned && !isRenaming ? <Icon name="pin" size={10} className="wsSessionPin" /> : null}
@@ -372,6 +384,7 @@ export type WorkspaceSidebarProps = {
   activeSessionId: string | null;
   sessionsByProject: Map<string, SidebarSession[]>;
   workingSessionIds: ReadonlySet<string>;
+  claudeSessionIds: ClaudeSessionIds;
   agentShortcuts: ProcessEffect[];
 
   onSelectProject: (id: string) => void;
@@ -432,6 +445,7 @@ export const WorkspaceSidebar = React.memo(function WorkspaceSidebar(props: Work
     activeSessionId,
     sessionsByProject,
     workingSessionIds,
+    claudeSessionIds,
     agentShortcuts,
     onSelectProject,
     onNewProject,
@@ -1312,6 +1326,7 @@ export const WorkspaceSidebar = React.memo(function WorkspaceSidebar(props: Work
                           isActive={s.id === activeSessionId}
                           isHighlighted={highlightedItem?.kind === "session" && highlightedItem.id === s.id}
                           isAgentWorking={workingSessionIds.has(s.id)}
+                          claudeSessionId={claudeSessionIds[s.id] ?? null}
                           isRenaming={renaming?.kind === "session" && renaming.id === s.id}
                           renameValue={renaming?.kind === "session" && renaming.id === s.id ? renameValue : ""}
                           onSelect={onSelectSession}
