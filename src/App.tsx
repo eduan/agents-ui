@@ -1,6 +1,7 @@
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { ClaudeMetricsIndicator } from "./components/ClaudeMetricsIndicator";
 import { homeDir } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { initBridge, registerHandlers, destroyBridge, notifyStateChange } from "./apiBridge";
@@ -10372,6 +10373,7 @@ export default function App() {
           sshTarget={activeSshTarget}
           connectionState={activeHealthConnectionState}
         />
+        <ClaudeMetricsIndicator hydrated={hydrated} terminalId={activeId} />
         {activeGridIds.length >= 2 ? (
           <button type="button" className="chip topbarSplitClose" onClick={handleCloseSplit} title="Close split">
             Close split ({activeGridIds.length})
@@ -10555,7 +10557,7 @@ export default function App() {
     uiTheme, autoCaffeinate, keepAwakeActive, showShortcutHint,
     handleToggleActivityCenter, handleOpenSettings, reportError,
     updateActiveWorkspaceView, refreshRecordings, activePreviewUrl, openUrlInWorkspaceBrowser,
-    activeGridIds, handleCloseSplit,
+    activeGridIds, handleCloseSplit, activeId,
   ]);
 
   const workspaceRowJsx = useMemo(() => (

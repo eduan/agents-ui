@@ -16,17 +16,34 @@ struct ClaudeSessionFile {
     session_id: String,
     #[serde(default)]
     job_id: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+/// The process currently running a conversation, from its session file.
+#[derive(Clone)]
+pub(crate) struct ConversationProcess {
+    pub pid: u32,
+    pub status: Option<String>,
 }
 
 #[derive(Default)]
-struct ClaudeSessions {
+pub(crate) struct ClaudeSessions {
     by_pid: HashMap<u32, String>,
     // Daemon (`kind: bg`) conversations, keyed by the short id `claude attach` takes.
     by_job: HashMap<String, String>,
+    by_session: HashMap<String, ConversationProcess>,
 }
 
-struct Process {
+impl ClaudeSessions {
+    pub(crate) fn process_of(&self, session_id: &str) -> Option<&ConversationProcess> {
+        self.by_session.get(session_id)
+    }
+}
+
+pub(crate) struct Process {
     ppid: u32,
+    pub rss_kb: Option<u64>,
     args: String,
 }
 
@@ -44,9 +61,9 @@ pub async fn claude_session_ids(state: State<'_, AppState>) -> Result<HashMap<St
     .map_err(|e| format!("claude session lookup failed: {e}"))
 }
 
-fn read_process_table() -> HashMap<u32, Process> {
+pub(crate) fn read_process_table() -> HashMap<u32, Process> {
     match std::process::Command::new("/bin/ps")
-        .args(["-axo", "pid=,ppid=,command="])
+        .args(["-axo", "pid=,ppid=,rss=,command="])
         .output()
     {
         Ok(output) if output.status.success() => parse_process_table(&String::from_utf8_lossy(&output.stdout)),
@@ -61,24 +78,29 @@ fn parse_process_table(table: &str) -> HashMap<u32, Process> {
             continue;
         };
         let rest = rest.trim_start();
-        let (ppid, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+        let (ppid, rest) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+        let rest = rest.trim_start();
+        let (rss, args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
         let (Ok(pid), Ok(ppid)) = (pid.parse::<u32>(), ppid.parse::<u32>()) else {
             continue;
         };
-        processes.insert(pid, Process { ppid, args: args.trim().to_string() });
+        processes.insert(
+            pid,
+            Process { ppid, rss_kb: rss.parse::<u64>().ok(), args: args.trim().to_string() },
+        );
     }
     processes
 }
 
-fn claude_sessions_dir() -> Option<PathBuf> {
+pub(crate) fn claude_config_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
-        return Some(PathBuf::from(dir).join("sessions"));
+        return Some(PathBuf::from(dir));
     }
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude").join("sessions"))
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude"))
 }
 
-fn read_claude_sessions() -> ClaudeSessions {
-    let Some(entries) = claude_sessions_dir().and_then(|dir| std::fs::read_dir(dir).ok()) else {
+pub(crate) fn read_claude_sessions() -> ClaudeSessions {
+    let Some(entries) = claude_config_dir().and_then(|dir| std::fs::read_dir(dir.join("sessions")).ok()) else {
         return ClaudeSessions::default();
     };
     let files = entries.filter_map(|entry| {
@@ -97,6 +119,10 @@ fn collect_sessions(files: impl IntoIterator<Item = ClaudeSessionFile>) -> Claud
         if let Some(job_id) = file.job_id.filter(|j| !j.is_empty()) {
             sessions.by_job.insert(job_id, file.session_id.clone());
         }
+        sessions.by_session.insert(
+            file.session_id.clone(),
+            ConversationProcess { pid: file.pid, status: file.status },
+        );
         sessions.by_pid.insert(file.pid, file.session_id);
     }
     sessions
@@ -114,7 +140,7 @@ fn attach_target(args: &str) -> Option<&str> {
 
 /// For each (terminal id, shell pid), the conversation of the nearest Claude
 /// Code process in that shell's process tree.
-fn resolve(
+pub(crate) fn resolve(
     roots: &[(String, u32)],
     processes: &HashMap<u32, Process>,
     sessions: &ClaudeSessions,
@@ -157,18 +183,18 @@ mod tests {
     use super::*;
 
     const PS: &str = "\
-  100     1 /Applications/Agents UI.app/Contents/MacOS/agents-ui
-  200   100 /bin/agsh
-  201   200 /Users/me/.local/bin/claude --dangerously-skip-permissions
-  300   100 /bin/agsh
-  301   300 claude attach d03e89b3
-  400   100 /bin/agsh
-  401   400 /usr/bin/vim notes.md
-  500   100 /bin/agsh
-  501   500 claude attach ffff0000
-  600   100 /bin/agsh
-  601   600 /bin/bash
-  602   601 claude
+  100     1  90000 /Applications/Agents UI.app/Contents/MacOS/agents-ui
+  200   100   4000 /bin/agsh
+  201   200 512000 /Users/me/.local/bin/claude --dangerously-skip-permissions
+  300   100   4000 /bin/agsh
+  301   300  60000 claude attach d03e89b3
+  400   100   4000 /bin/agsh
+  401   400   8000 /usr/bin/vim notes.md
+  500   100   4000 /bin/agsh
+  501   500  60000 claude attach ffff0000
+  600   100   4000 /bin/agsh
+  601   600   3000 /bin/bash
+  602   601 125000 claude
 ";
 
     fn session(pid: u32, session_id: &str, job_id: Option<&str>) -> ClaudeSessionFile {
@@ -176,6 +202,7 @@ mod tests {
             pid,
             session_id: session_id.to_string(),
             job_id: job_id.map(str::to_string),
+            status: Some("busy".to_string()),
         }
     }
 
@@ -229,6 +256,20 @@ mod tests {
         assert_eq!(found.len(), 2);
         assert_eq!(found["a"], "cfc0ee05-e766-41bf-ab43-893edaacd0e7");
         assert_eq!(found["b"], "d03e89b3-4ae6-43a8-97d9-7a320a1ad5e9");
+    }
+
+    #[test]
+    fn parse_process_table_reads_resident_memory_and_full_command() {
+        let processes = parse_process_table(PS);
+        assert_eq!(processes[&201].rss_kb, Some(512000));
+        assert_eq!(processes[&100].args, "/Applications/Agents UI.app/Contents/MacOS/agents-ui");
+    }
+
+    #[test]
+    fn process_of_daemon_conversation_returns_its_process_and_status() {
+        let process = known_sessions().process_of("d03e89b3-4ae6-43a8-97d9-7a320a1ad5e9").cloned().unwrap();
+        assert_eq!(process.pid, 25754);
+        assert_eq!(process.status.as_deref(), Some("busy"));
     }
 
     #[test]

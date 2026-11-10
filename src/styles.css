@@ -2115,6 +2115,15 @@ body::after {
   font-variant-numeric: tabular-nums;
 }
 
+.claudeMetricsStats {
+  padding-left: 14px;
+  border-left: 1px solid rgba(var(--ink-rgb), 0.1);
+}
+
+.claudeStatus-busy {
+  color: rgba(var(--success-rgb), 0.95);
+}
+
 .errorBanner {
   display: flex;
   align-items: center;

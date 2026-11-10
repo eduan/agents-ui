@@ -13,6 +13,7 @@ mod app_info;
 mod app_menu;
 mod assets;
 mod browser;
+mod claude_metrics;
 mod claude_sessions;
 mod display_recovery;
 mod file_manager;
@@ -255,6 +256,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             claude_sessions::claude_session_ids,
+            claude_metrics::claude_session_metrics,
             create_session,
             renderer_listener_ticket,
             renderer_listener_ready,
